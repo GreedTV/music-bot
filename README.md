@@ -25,5 +25,14 @@ Plays audio from YouTube links or search terms in a voice channel.
    .venv\Scripts\python bot.py
    ```
 
+## Run automatically at login (Windows)
+Starts the bot in the background each time you log in, and restarts it if it crashes.
+Output goes to `bot.log`.
+```
+powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1
+Start-ScheduledTask -TaskName MusicBot
+```
+To turn it off: `powershell -ExecutionPolicy Bypass -File .\remove-autostart.ps1`
+
 ffmpeg is bundled through the `imageio-ffmpeg` package, so no separate install is needed.
 Optional: installing [Deno](https://deno.com) (`winget install DenoLand.Deno`) makes YouTube extraction more reliable.

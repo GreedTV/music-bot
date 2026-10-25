@@ -1,7 +1,10 @@
 """Simple Discord music bot: plays audio from YouTube links or search terms."""
 import asyncio
+import logging
+import logging.handlers
 import os
 from collections import deque
+from pathlib import Path
 
 import discord
 import imageio_ffmpeg
@@ -9,8 +12,15 @@ import yt_dlp
 from discord import app_commands
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 TOKEN = os.getenv("DISCORD_TOKEN")
+
+# Log to bot.log (rotated at 1 MB) so the bot can run in the background with no window.
+log_handler = logging.handlers.RotatingFileHandler(
+    BASE_DIR / "bot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+)
+log = logging.getLogger("musicbot")
 
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 FFMPEG_OPTS = {
@@ -169,10 +179,10 @@ async def stop(interaction: discord.Interaction):
 @client.event
 async def on_ready():
     await tree.sync()
-    print(f"Logged in as {client.user} — slash commands synced.")
+    log.info("Logged in as %s — slash commands synced.", client.user)
 
 
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("Set DISCORD_TOKEN in a .env file next to bot.py")
-    client.run(TOKEN)
+    client.run(TOKEN, log_handler=log_handler, root_logger=True)
