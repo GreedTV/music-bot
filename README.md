@@ -1,16 +1,28 @@
 # Discord Music Bot
 
-Plays audio from YouTube links or search terms in a voice channel.
+Plays music in a voice channel from YouTube links, YouTube playlists, search terms, or links from
+other sites yt-dlp supports (SoundCloud, Bandcamp, Vimeo, ...). When the queue runs out, autoplay keeps
+going with similar songs and similar artists, using YouTube's Mix for the last song played.
 
 ## Commands
 | Command | What it does |
 |---|---|
-| `/play <url or search>` | Joins your voice channel and plays (or queues) a song |
+| `/play <link or search>` | Joins your voice channel and plays or queues a song or a whole playlist (up to 100 songs) |
 | `/skip` | Skips the current song |
+| `/skipto <position>` | Jumps to a song in the queue |
 | `/pause` / `/resume` | Pause / resume |
-| `/queue` | Shows what's playing and what's next |
+| `/nowplaying` | Shows the current song and its link |
+| `/queue [page]` | Shows what's playing and what's next |
+| `/remove <position>` | Removes a song from the queue |
+| `/move <from> <to>` | Moves a song in the queue |
+| `/shuffle` | Shuffles the queue |
+| `/clear` | Clears upcoming songs |
+| `/loop off\|song\|queue` | Repeats the current song or the whole queue |
+| `/autoplay on\|off` | Keep playing similar songs when the queue ends (on by default) |
 | `/volume <0-100>` | Sets volume |
 | `/stop` | Clears the queue and leaves |
+
+The bot leaves on its own a minute after everyone else has left the voice channel.
 
 ## Setup
 1. Go to https://discord.com/developers/applications → **New Application**.
