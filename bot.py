@@ -52,13 +52,26 @@ MAX_QUEUE = 500
 
 class Track:
     def __init__(self, title: str, url: str, requester: str, youtube_id: str | None = None,
-                 stream_url: str | None = None):
+                 stream_url: str | None = None, duration: float | None = None):
         self.title = title
         self.url = url  # page URL, used to (re)resolve the audio stream
         self.requester = requester
         self.youtube_id = youtube_id
         self.stream_url = stream_url
         self.resolved_at = time.time() if stream_url else 0.0
+        self.duration = duration
+
+    @property
+    def thumbnail(self) -> str | None:
+        return f"https://i.ytimg.com/vi/{self.youtube_id}/hqdefault.jpg" if self.youtube_id else None
+
+
+def format_duration(seconds: float | None) -> str:
+    if not seconds:
+        return "Live"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
 
 
 class GuildPlayer:
@@ -74,6 +87,7 @@ class GuildPlayer:
         self.text_channel: discord.abc.Messageable | None = None
         self.skipping = False
         self.lock = asyncio.Lock()
+        self.np_message: discord.Message | None = None  # the "Now playing" card with the buttons
 
 
 intents = discord.Intents.default()
@@ -96,7 +110,7 @@ def _entry_to_track(entry: dict, requester: str) -> Track:
     yt_id = _youtube_id(entry)
     if yt_id and not str(url).startswith("http"):
         url = f"https://www.youtube.com/watch?v={yt_id}"
-    return Track(entry.get("title") or url, url, requester, yt_id)
+    return Track(entry.get("title") or url, url, requester, yt_id, duration=entry.get("duration"))
 
 
 async def fetch_tracks(query: str, requester: str) -> tuple[list[Track], str | None]:
@@ -113,7 +127,8 @@ async def fetch_tracks(query: str, requester: str) -> tuple[list[Track], str | N
         if (info.get("extractor_key") or "").lower().startswith("youtubesearch"):
             return [_entry_to_track(entries[0], requester)], None
         return [_entry_to_track(e, requester) for e in entries], info.get("title") or "playlist"
-    track = Track(info["title"], info.get("webpage_url", query), requester, _youtube_id(info), info.get("url"))
+    track = Track(info["title"], info.get("webpage_url", query), requester, _youtube_id(info), info.get("url"),
+                  info.get("duration"))
     return [track], None
 
 
@@ -128,6 +143,7 @@ async def resolve_stream(track: Track) -> str:
     info = await asyncio.to_thread(_extract)
     track.stream_url, track.resolved_at = info["url"], time.time()
     track.youtube_id = track.youtube_id or _youtube_id(info)
+    track.duration = track.duration or info.get("duration")
     return track.stream_url
 
 
@@ -183,6 +199,7 @@ async def play_next(guild: discord.Guild):
         elif finished and player.skipping and player.loop == "queue":
             player.queue.append(finished)
         player.skipping = False
+        await retire_now_playing(player)
 
         for _attempt in range(5):  # give up after a few broken songs in a row (e.g. network down)
             if player.queue:
@@ -196,7 +213,6 @@ async def play_next(guild: discord.Guild):
                 if not track:
                     await announce(player, "Autoplay couldn't find a related song. Queue finished.")
                     return
-                await announce(player, f"🔁 Autoplay: **{track.title}**")
             else:
                 return
 
@@ -225,12 +241,176 @@ async def play_next(guild: discord.Guild):
             asyncio.run_coroutine_threadsafe(play_next(guild), client.loop)
 
         vc.play(source, after=after)
-        if track.requester != "Autoplay":
-            await announce(player, f"▶️ Now playing **{track.title}** (requested by {track.requester})")
+        await post_now_playing(player)
 
 
 def is_active(vc: discord.VoiceClient | None) -> bool:
     return bool(vc and (vc.is_playing() or vc.is_paused()))
+
+
+# ---- "Now playing" card with control buttons ----
+
+def now_playing_embed(player: GuildPlayer, paused: bool = False) -> discord.Embed:
+    track = player.current
+    autoplayed = track.requester == "Autoplay"
+    embed = discord.Embed(title=track.title[:256], url=track.url if str(track.url).startswith("http") else None,
+                          color=0xFAA61A if paused else 0x5865F2)
+    embed.set_author(name="⏸️ Paused" if paused else "🎵 Now playing")
+    embed.add_field(name="Duration", value=format_duration(track.duration))
+    embed.add_field(name="Requested by", value="🔁 Autoplay (similar song)" if autoplayed else track.requester)
+    if player.queue:
+        up_next = player.queue[0].title
+    elif player.loop != "off":
+        up_next = "This song again (loop)"
+    else:
+        up_next = "Autoplay will pick a similar song" if player.autoplay else "Nothing. Add songs with /play"
+    embed.add_field(name="Up next", value=up_next[:1024], inline=False)
+    if track.thumbnail:
+        embed.set_thumbnail(url=track.thumbnail)
+    embed.set_footer(text=f"Loop: {player.loop} · Autoplay: {'on' if player.autoplay else 'off'} · "
+                          f"Volume: {round(player.volume * 100)}% · {len(player.queue)} in queue")
+    return embed
+
+
+class PlayerControls(discord.ui.View):
+    """Buttons under the "Now playing" card. Persistent: custom_ids keep them working after a restart."""
+
+    def __init__(self, player: GuildPlayer | None = None, paused: bool = False):
+        super().__init__(timeout=None)
+        if paused:
+            self.pause_resume.label, self.pause_resume.emoji = "Resume", "▶️"
+        if player and player.loop != "off":
+            self.loop_mode.label = f"Loop: {player.loop}"
+            self.loop_mode.style = discord.ButtonStyle.success
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        vc = interaction.guild.voice_client
+        if not vc or not vc.is_connected() or interaction.guild.id not in players:
+            await interaction.response.send_message("Nothing is playing right now.", ephemeral=True)
+            return False
+        if not interaction.user.voice or interaction.user.voice.channel != vc.channel:
+            await interaction.response.send_message("Join my voice channel to use the controls.", ephemeral=True)
+            return False
+        return True
+
+    async def _redraw(self, interaction: discord.Interaction):
+        player = get_player(interaction.guild.id)
+        paused = interaction.guild.voice_client.is_paused()
+        if player.current:
+            await interaction.response.edit_message(embed=now_playing_embed(player, paused),
+                                                    view=PlayerControls(player, paused))
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="Pause", emoji="⏸️", style=discord.ButtonStyle.primary, custom_id="musicbot:pause", row=0)
+    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        if vc.is_paused():
+            vc.resume()
+        elif vc.is_playing():
+            vc.pause()
+        await self._redraw(interaction)
+
+    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="musicbot:skip", row=0)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        player = get_player(interaction.guild.id)
+        if not is_active(vc):
+            return await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+        title = player.current.title if player.current else "the song"
+        await interaction.response.send_message(f"⏭️ **{interaction.user.display_name}** skipped **{title}**.")
+        player.skipping = True
+        vc.stop()
+
+    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="musicbot:stop", row=0)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(f"⏹️ **{interaction.user.display_name}** stopped the music.")
+        await stop_playback(interaction.guild)
+
+    @discord.ui.button(label="Loop: off", emoji="🔁", style=discord.ButtonStyle.secondary, custom_id="musicbot:loop", row=0)
+    async def loop_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = get_player(interaction.guild.id)
+        player.loop = {"off": "song", "song": "queue", "queue": "off"}[player.loop]
+        await self._redraw(interaction)
+
+    @discord.ui.button(label="Shuffle", emoji="🔀", style=discord.ButtonStyle.secondary, custom_id="musicbot:shuffle", row=0)
+    async def shuffle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = get_player(interaction.guild.id)
+        if not shuffle_queue(player):
+            return await interaction.response.send_message("Not enough songs in the queue to shuffle.", ephemeral=True)
+        await self._redraw(interaction)
+        await interaction.followup.send(f"🔀 **{interaction.user.display_name}** shuffled the queue.")
+
+    @discord.ui.button(label="Queue", emoji="📜", style=discord.ButtonStyle.secondary, custom_id="musicbot:queue", row=1)
+    async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(queue_text(get_player(interaction.guild.id)), ephemeral=True)
+
+
+async def post_now_playing(player: GuildPlayer):
+    if not player.text_channel or not player.current:
+        return
+    try:
+        player.np_message = await player.text_channel.send(embed=now_playing_embed(player), view=PlayerControls(player))
+    except discord.HTTPException:
+        log.warning("Could not send the now-playing card")
+
+
+async def refresh_now_playing(guild: discord.Guild):
+    """Redraw the card after a slash command changed something it shows."""
+    player = players.get(guild.id)
+    if not player or not player.np_message or not player.current:
+        return
+    paused = bool(guild.voice_client and guild.voice_client.is_paused())
+    try:
+        await player.np_message.edit(embed=now_playing_embed(player, paused), view=PlayerControls(player, paused))
+    except discord.HTTPException:
+        pass
+
+
+async def retire_now_playing(player: GuildPlayer):
+    """Remove the buttons from the old card so only the current song has controls."""
+    message, player.np_message = player.np_message, None
+    if message:
+        try:
+            await message.edit(view=None)
+        except discord.HTTPException:
+            pass
+
+
+async def stop_playback(guild: discord.Guild):
+    player = players.pop(guild.id, None)
+    if player:
+        await retire_now_playing(player)
+    if guild.voice_client:
+        await guild.voice_client.disconnect()
+
+
+def shuffle_queue(player: GuildPlayer) -> bool:
+    if len(player.queue) < 2:
+        return False
+    items = list(player.queue)
+    random.shuffle(items)
+    player.queue = deque(items)
+    return True
+
+
+def queue_text(player: GuildPlayer, page: int = 1) -> str:
+    status = f"Loop: **{player.loop}** · Autoplay: **{'on' if player.autoplay else 'off'}**"
+    if not player.current and not player.queue:
+        return f"The queue is empty.\n{status}"
+    per_page = 10
+    pages = max(1, -(-len(player.queue) // per_page))
+    page = min(page, pages)
+    lines = []
+    if player.current:
+        lines.append(f"**Now playing:** {player.current.title} (requested by {player.current.requester})")
+    start = (page - 1) * per_page
+    for i, t in enumerate(list(player.queue)[start:start + per_page], start=start + 1):
+        lines.append(f"`{i}.` {t.title} · {format_duration(t.duration)} (requested by {t.requester})")
+    if player.queue:
+        lines.append(f"Page {page}/{pages} · {len(player.queue)} songs queued")
+    lines.append(status)
+    return "\n".join(lines)
 
 
 @tree.command(description="Play a song or playlist from a link (YouTube, SoundCloud, ...) or search terms")
@@ -268,7 +448,9 @@ async def play(interaction: discord.Interaction, query: str):
     else:
         msg = f"Loading **{tracks[0].title}**..."
     await interaction.followup.send(msg)
-    if not is_active(vc):
+    if is_active(vc):
+        await refresh_now_playing(interaction.guild)
+    else:
         await play_next(interaction.guild)
 
 
@@ -287,7 +469,8 @@ async def pause(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        return await interaction.response.send_message("⏸️ Paused.")
+        await interaction.response.send_message("⏸️ Paused.")
+        return await refresh_now_playing(interaction.guild)
     await interaction.response.send_message("Nothing is playing.", ephemeral=True)
 
 
@@ -296,39 +479,28 @@ async def resume(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        return await interaction.response.send_message("▶️ Resumed.")
+        await interaction.response.send_message("▶️ Resumed.")
+        return await refresh_now_playing(interaction.guild)
     await interaction.response.send_message("Nothing is paused.", ephemeral=True)
 
 
 @tree.command(description="Show the queue")
 @app_commands.describe(page="Page number")
 async def queue(interaction: discord.Interaction, page: app_commands.Range[int, 1] = 1):
-    player = get_player(interaction.guild.id)
-    status = f"Loop: **{player.loop}** · Autoplay: **{'on' if player.autoplay else 'off'}**"
-    if not player.current and not player.queue:
-        return await interaction.response.send_message(f"The queue is empty.\n{status}")
-    per_page = 10
-    pages = max(1, -(-len(player.queue) // per_page))
-    page = min(page, pages)
-    lines = []
-    if player.current:
-        lines.append(f"**Now playing:** {player.current.title} (requested by {player.current.requester})")
-    start = (page - 1) * per_page
-    for i, t in enumerate(list(player.queue)[start:start + per_page], start=start + 1):
-        lines.append(f"`{i}.` {t.title} (requested by {t.requester})")
-    if player.queue:
-        lines.append(f"Page {page}/{pages} · {len(player.queue)} songs queued")
-    lines.append(status)
-    await interaction.response.send_message("\n".join(lines))
+    await interaction.response.send_message(queue_text(get_player(interaction.guild.id), page))
 
 
-@tree.command(name="nowplaying", description="Show the current song")
+@tree.command(name="nowplaying", description="Show the current song with the player buttons")
 async def now_playing(interaction: discord.Interaction):
-    player = get_player(interaction.guild.id)
-    if not player.current:
+    player = players.get(interaction.guild.id)
+    if not player or not player.current:
         return await interaction.response.send_message("Nothing is playing.", ephemeral=True)
-    t = player.current
-    await interaction.response.send_message(f"▶️ **{t.title}** (requested by {t.requester})\n{t.url}")
+    # Move the card (and its buttons) down to the latest message in this channel.
+    await retire_now_playing(player)
+    player.text_channel = interaction.channel
+    paused = interaction.guild.voice_client.is_paused()
+    await interaction.response.send_message(embed=now_playing_embed(player, paused), view=PlayerControls(player, paused))
+    player.np_message = await interaction.original_response()
 
 
 @tree.command(description="Remove a song from the queue")
@@ -340,6 +512,7 @@ async def remove(interaction: discord.Interaction, position: app_commands.Range[
     track = player.queue[position - 1]
     del player.queue[position - 1]
     await interaction.response.send_message(f"Removed **{track.title}**.")
+    await refresh_now_playing(interaction.guild)
 
 
 @tree.command(description="Move a song to a different position in the queue")
@@ -352,6 +525,7 @@ async def move(interaction: discord.Interaction, from_position: app_commands.Ran
     del player.queue[from_position - 1]
     player.queue.insert(min(to_position, len(player.queue) + 1) - 1, track)
     await interaction.response.send_message(f"Moved **{track.title}** to position {min(to_position, len(player.queue))}.")
+    await refresh_now_playing(interaction.guild)
 
 
 @tree.command(description="Skip straight to a song in the queue")
@@ -375,13 +549,10 @@ async def skipto(interaction: discord.Interaction, position: app_commands.Range[
 
 @tree.command(description="Shuffle the queue")
 async def shuffle(interaction: discord.Interaction):
-    player = get_player(interaction.guild.id)
-    if len(player.queue) < 2:
+    if not shuffle_queue(get_player(interaction.guild.id)):
         return await interaction.response.send_message("Not enough songs to shuffle.", ephemeral=True)
-    items = list(player.queue)
-    random.shuffle(items)
-    player.queue = deque(items)
     await interaction.response.send_message("🔀 Shuffled the queue.")
+    await refresh_now_playing(interaction.guild)
 
 
 @tree.command(description="Clear upcoming songs (keeps the current one playing)")
@@ -389,18 +560,21 @@ async def clear(interaction: discord.Interaction):
     player = get_player(interaction.guild.id)
     player.queue.clear()
     await interaction.response.send_message("🧹 Cleared the queue.")
+    await refresh_now_playing(interaction.guild)
 
 
 @tree.command(description="Repeat the current song, the whole queue, or nothing")
 async def loop(interaction: discord.Interaction, mode: Literal["off", "song", "queue"]):
     get_player(interaction.guild.id).loop = mode
     await interaction.response.send_message(f"🔁 Loop set to **{mode}**.")
+    await refresh_now_playing(interaction.guild)
 
 
 @tree.command(description="When the queue ends, keep playing similar songs")
 async def autoplay(interaction: discord.Interaction, mode: Literal["on", "off"]):
     get_player(interaction.guild.id).autoplay = mode == "on"
     await interaction.response.send_message(f"Autoplay is now **{mode}**.")
+    await refresh_now_playing(interaction.guild)
 
 
 @tree.command(description="Set volume (0-100)")
@@ -411,16 +585,15 @@ async def volume(interaction: discord.Interaction, percent: app_commands.Range[i
     if vc and isinstance(vc.source, discord.PCMVolumeTransformer):
         vc.source.volume = player.volume
     await interaction.response.send_message(f"🔊 Volume set to {percent}%.")
+    await refresh_now_playing(interaction.guild)
 
 
 @tree.command(description="Stop, clear the queue, and leave the voice channel")
 async def stop(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    players.pop(interaction.guild.id, None)
-    if vc:
-        await vc.disconnect()
-        return await interaction.response.send_message("⏹️ Stopped and left the channel.")
-    await interaction.response.send_message("I'm not in a voice channel.", ephemeral=True)
+    if not interaction.guild.voice_client:
+        return await interaction.response.send_message("I'm not in a voice channel.", ephemeral=True)
+    await interaction.response.send_message("⏹️ Stopped and left the channel.")
+    await stop_playback(interaction.guild)
 
 
 @client.event
@@ -432,8 +605,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     await asyncio.sleep(60)
     vc = member.guild.voice_client
     if vc and vc.is_connected() and listeners(vc) == 0:
-        players.pop(member.guild.id, None)
-        await vc.disconnect()
+        await stop_playback(member.guild)
 
 
 ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
@@ -451,6 +623,7 @@ async def keep_awake_while_playing():
 async def on_ready():
     if sys.platform == "win32" and not keep_awake_while_playing.is_running():
         keep_awake_while_playing.start()
+    client.add_view(PlayerControls())  # makes buttons on existing cards work again after a restart
     await tree.sync()
     log.info("Logged in as %s — slash commands synced.", client.user)
 

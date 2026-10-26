@@ -4,6 +4,11 @@ Plays music in a voice channel from YouTube links, YouTube playlists, search ter
 other sites yt-dlp supports (SoundCloud, Bandcamp, Vimeo, ...). When the queue runs out, autoplay keeps
 going with similar songs and similar artists, using YouTube's Mix for the last song played.
 
+## Player buttons
+Each song posts a **Now playing** card (title, length, who asked for it, what's up next) with buttons:
+⏸️ Pause/Resume · ⏭️ Skip · ⏹️ Stop · 🔁 Loop (off → song → queue) · 🔀 Shuffle · 📜 Queue.
+Only people in the bot's voice channel can press them. `/nowplaying` brings the card back to the bottom of the chat.
+
 ## Commands
 | Command | What it does |
 |---|---|
