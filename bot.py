@@ -1280,11 +1280,6 @@ def _song_link(title: str, url: str | None) -> str:
     return f"[{title}]({url})" if url and url.startswith("http") else title
 
 
-PROFILE_COLORS = {
-    "blurple": 0x5865F2, "red": 0xED4245, "orange": 0xF57C1F, "yellow": 0xFEE75C, "green": 0x57F287,
-    "teal": 0x1ABC9C, "blue": 0x3498DB, "purple": 0x9B59B6, "pink": 0xEB459E, "white": 0xFFFFFF, "black": 0x23272A,
-}
-
 # Badges, earned automatically. For each kind only the highest tier reached is shown.
 BADGE_TIERS = [
     (lambda p: p.total_seconds / 3600, [(1, "🎧 1h listener"), (10, "🎶 10h listener"), (100, "👑 100h listener")]),
@@ -1413,17 +1408,15 @@ def _no_links(text: str) -> bool:
     return not re.search(r"https?://|discord\.gg/|www\.", text, re.I)
 
 
-COLOR_EMOJI = {"blurple": "💙", "red": "🟥", "orange": "🟧", "yellow": "🟨", "green": "🟩", "teal": "🩵",
-               "blue": "🟦", "purple": "🟪", "pink": "🩷", "white": "⬜", "black": "⬛"}
-
-
 def parse_color(text: str) -> int | None:
-    """'pink' or '#ff66aa' -> 0xff66aa"""
-    text = text.strip().lower()
-    if text in PROFILE_COLORS:
-        return PROFILE_COLORS[text]
-    match = re.fullmatch(r"#?([0-9a-f]{6})", text)
-    return int(match.group(1), 16) if match else None
+    """'#ff66aa', 'ff66aa' or the short '#f6a' -> 0xff66aa"""
+    match = re.fullmatch(r"#?([0-9a-f]{3}|[0-9a-f]{6})", text.strip().lower())
+    if not match:
+        return None
+    code = match.group(1)
+    if len(code) == 3:
+        code = "".join(c * 2 for c in code)
+    return int(code, 16)
 
 
 async def save_background_upload(user_id: int, image: discord.Attachment) -> str | None:
@@ -1448,9 +1441,9 @@ class _TextModal(discord.ui.Modal):
         super().__init__(title=title, timeout=300)
         self.editor, self.save = editor, save
         self.box = discord.ui.TextInput(
-            label=label, default=current, required=False, max_length=max_length, placeholder=placeholder,
+            default=current, required=False, max_length=max_length, placeholder=placeholder,
             style=discord.TextStyle.paragraph if max_length > 80 else discord.TextStyle.short)
-        self.add_item(self.box)
+        self.add_item(discord.ui.Label(text=label, component=self.box))
 
     async def on_submit(self, interaction: discord.Interaction):
         error = self.save(self.box.value.strip())
@@ -1472,22 +1465,12 @@ class _BackgroundModal(discord.ui.Modal, title="Profile background"):
 
 
 class ProfileEditor(discord.ui.View):
-    """The /editprofile panel: a live preview of the card, with buttons and a color menu to change it."""
+    """The /editprofile panel: a live preview of the card, with buttons to change it."""
 
     def __init__(self, owner: discord.Member, guild: discord.Guild):
         super().__init__(timeout=600)
         self.owner, self.owner_id, self.guild = owner, owner.id, guild
         self.message: discord.Message | None = None
-        self._set_color_options()
-
-    def _set_color_options(self):
-        current = storage.get_style(self.owner_id).color
-        self.color_menu.options = [
-            discord.SelectOption(label=name.capitalize(), value=name, emoji=COLOR_EMOJI.get(name),
-                                 default=current == value)
-            for name, value in PROFILE_COLORS.items()
-        ] + [discord.SelectOption(label="Custom color…", value="custom", emoji="🎨",
-                                  description="Type a color code like #ff66aa")]
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -1509,7 +1492,6 @@ class ProfileEditor(discord.ui.View):
             await interaction.response.defer()
         if error:
             return await interaction.followup.send(error, ephemeral=True)
-        self._set_color_options()
         await interaction.edit_original_response(**await self.render())
 
     async def on_timeout(self):
@@ -1520,29 +1502,24 @@ class ProfileEditor(discord.ui.View):
             except discord.HTTPException:
                 pass
 
-    @discord.ui.select(placeholder="🎨 Card color", row=0)
-    async def color_menu(self, interaction: discord.Interaction, select: discord.ui.Select):
-        choice = select.values[0]
-        if choice != "custom":
-            storage.update_style(self.owner_id, color=PROFILE_COLORS[choice])
-            return await self.refresh(interaction)
-
+    @discord.ui.button(label="Color", emoji="🎨", style=discord.ButtonStyle.primary, row=0)
+    async def color(self, interaction: discord.Interaction, button: discord.ui.Button):
         def save(text: str):
             if not text:
                 storage.update_style(self.owner_id, color=None)
                 return None
             color = parse_color(text)
             if color is None:
-                return "That's not a color code. Use 6 characters like `#ff66aa`."
+                return "That's not a color code. Use one like `#ff66aa` (or the short `#f6a`)."
             storage.update_style(self.owner_id, color=color)
             return None
 
         current = storage.get_style(self.owner_id).color
         await interaction.response.send_modal(_TextModal(
-            self, "Custom color", "Color code (leave empty for the default)",
+            self, "Card color", "Color code (leave empty for the default)",
             f"#{current:06x}" if current is not None else None, 7, "#ff66aa", save))
 
-    @discord.ui.button(label="Bio", emoji="💬", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Bio", emoji="💬", style=discord.ButtonStyle.primary, row=0)
     async def bio(self, interaction: discord.Interaction, button: discord.ui.Button):
         def save(text: str):
             if text and not _no_links(text):
@@ -1554,7 +1531,7 @@ class ProfileEditor(discord.ui.View):
             self, "Your bio", "Bio (leave empty to remove it)", storage.get_style(self.owner_id).bio, 100,
             "lofi all day 🌙", save))
 
-    @discord.ui.button(label="Favorite song", emoji="⭐", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Favorite song", emoji="⭐", style=discord.ButtonStyle.primary, row=0)
     async def favorite(self, interaction: discord.Interaction, button: discord.ui.Button):
         def save(text: str):
             if text and not _no_links(text):
@@ -1566,21 +1543,21 @@ class ProfileEditor(discord.ui.View):
             self, "Favorite song", "Favorite song (leave empty to remove it)",
             storage.get_style(self.owner_id).favorite, 80, "Get Lucky - Daft Punk", save))
 
-    @discord.ui.button(label="Background", emoji="🖼️", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Background", emoji="🖼️", style=discord.ButtonStyle.primary, row=0)
     async def background(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(_BackgroundModal(self))
 
-    @discord.ui.button(label="Remove background", emoji="🗑️", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="Remove background", emoji="🗑️", style=discord.ButtonStyle.secondary, row=1)
     async def remove_background(self, interaction: discord.Interaction, button: discord.ui.Button):
         storage.delete_background(self.owner_id)
         await self.refresh(interaction)
 
-    @discord.ui.button(label="Reset everything", emoji="🧽", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="Reset everything", emoji="🧽", style=discord.ButtonStyle.danger, row=1)
     async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
         storage.reset_style(self.owner_id)
         await self.refresh(interaction)
 
-    @discord.ui.button(label="Done", emoji="✅", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="Done", emoji="✅", style=discord.ButtonStyle.success, row=1)
     async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         await interaction.response.edit_message(content="✅ Profile saved! Show it off with `M.profile`.", view=None)
