@@ -58,7 +58,7 @@ Every command also works with the `M.` prefix (any case), with the same options 
 | `M.dc` / `M.leave` | stop | | `M.pl` | playlist |
 | `M.247` | 24-7 | | `M.h` | help |
 
-The bot's status shows **Listening to M.help · /play**.
+The bot's status shows **Type /help or M.help**.
 
 Without 24/7 mode, the bot leaves a minute after everyone else has left the voice channel.
 Saved playlists and server settings are stored in `data/musicbot.db` (SQLite).

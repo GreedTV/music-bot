@@ -181,8 +181,7 @@ class MusicTree(app_commands.CommandTree):
 
 intents = discord.Intents.default()
 intents.message_content = True  # for M. prefix commands; must also be switched on in the Developer Portal
-client = discord.Client(intents=intents,
-                        activity=discord.Activity(type=discord.ActivityType.listening, name="M.help · /play"))
+client = discord.Client(intents=intents, activity=discord.CustomActivity(name="Type /help or M.help"))
 tree = MusicTree(client)
 players: dict[int, GuildPlayer] = {}
 http_session: aiohttp.ClientSession | None = None
