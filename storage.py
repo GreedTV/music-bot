@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS song_plays (
     requester_id INTEGER,
     played_at    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS profile_style (
+    user_id     INTEGER PRIMARY KEY,
+    color       INTEGER,
+    bio         TEXT,
+    emoji       TEXT,
+    fav_title   TEXT,
+    fav_url     TEXT
+);
 CREATE INDEX IF NOT EXISTS song_plays_by_guild ON song_plays (guild_id, played_at);
 CREATE INDEX IF NOT EXISTS song_plays_by_requester ON song_plays (requester_id);
 """
@@ -219,8 +227,48 @@ def delete_user_data(user_id: int) -> int:
     Returns how many playlists were removed. Their tracking opt-out, if any, is kept."""
     with _connect() as conn:
         count = conn.execute("DELETE FROM playlists WHERE user_id = ?", (user_id,)).rowcount
+        conn.execute("DELETE FROM profile_style WHERE user_id = ?", (user_id,))
         _delete_stats(conn, user_id)
     return count
+
+
+# ---- profile decorations ----
+
+@dataclass
+class ProfileStyle:
+    color: int | None = None
+    bio: str | None = None
+    emoji: str | None = None
+    fav_title: str | None = None
+    fav_url: str | None = None
+
+
+_STYLE_FIELDS = ("color", "bio", "emoji", "fav_title", "fav_url")
+
+
+def get_style(user_id: int) -> ProfileStyle:
+    with _connect() as conn:
+        row = conn.execute(f"SELECT {', '.join(_STYLE_FIELDS)} FROM profile_style WHERE user_id = ?",
+                           (user_id,)).fetchone()
+    return ProfileStyle(*row) if row else ProfileStyle()
+
+
+def update_style(user_id: int, **changes):
+    """Set some decoration fields (None clears one)."""
+    assert set(changes) <= set(_STYLE_FIELDS)
+    style = get_style(user_id)
+    for key, value in changes.items():
+        setattr(style, key, value)
+    with _connect() as conn:
+        conn.execute(
+            f"INSERT INTO profile_style (user_id, {', '.join(_STYLE_FIELDS)}) VALUES (?, ?, ?, ?, ?, ?) "
+            f"ON CONFLICT (user_id) DO UPDATE SET " + ", ".join(f"{f} = excluded.{f}" for f in _STYLE_FIELDS),
+            (user_id, *(getattr(style, f) for f in _STYLE_FIELDS)))
+
+
+def reset_style(user_id: int):
+    with _connect() as conn:
+        conn.execute("DELETE FROM profile_style WHERE user_id = ?", (user_id,))
 
 
 def _delete_stats(conn: sqlite3.Connection, user_id: int):

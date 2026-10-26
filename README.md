@@ -9,7 +9,7 @@ going with similar songs and similar artists, using YouTube's Mix for the last s
 ## Player card
 Each song posts a **Now playing** card with a progress bar, who asked for it and what's up next, plus buttons:
 ⏮️ Back · ⏸️ Pause/Resume · ⏭️ Skip · ⏹️ Stop · 🔁 Loop (off → song → queue) · 🔀 Shuffle · 📻 Autoplay ·
-📜 Queue · 🎤 Lyrics.
+📜 Queue · 🎤 Lyrics · ♾️ 24/7 (server managers only).
 Only people in the bot's voice channel can use them. `/nowplaying` brings the card back to the bottom of the chat.
 
 ## Who controls the music
@@ -39,6 +39,7 @@ Only people in the bot's voice channel can use them. `/nowplaying` brings the ca
 | `/autoplay on\|off` | Keep playing similar songs when the queue ends (remembered per server) |
 | `/playlist save\|add\|play\|show\|list\|delete` | Your own saved playlists, usable in any server |
 | `/profile [share]` | Your stats: listening time, songs heard/requested, top songs and artists, streak, who you listen with, top servers. Only you see it unless you share it (`M.profile` goes to your DMs) |
+| `/editprofile <setting> [value]` | Decorate your profile: `color` (name or `#hex`), `bio` (100 characters, no links), `emoji`, `favorite` (current song, or a song name), or `reset`. `clear` removes one. Badges are earned automatically |
 | `/tracking on\|off` | Turn your listening stats on or off (off deletes them) |
 | `/top` | This server's most played songs and biggest listeners in the last 7 days |
 | `/history` | The last 20 songs played in this server |

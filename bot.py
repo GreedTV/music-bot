@@ -575,6 +575,7 @@ def now_playing_embed(player: GuildPlayer) -> discord.Embed:
     if track.thumbnail:
         embed.set_thumbnail(url=track.thumbnail)
     effect = f" · Effect: {FILTERS[player.filter][2]}" if player.filter != "off" else ""
+    effect += " · 24/7" if player.settings.stay_247 else ""
     embed.set_footer(text=f"Loop: {player.loop} · Autoplay: {'on' if player.autoplay else 'off'}{effect} · "
                           f"Volume: {round(player.volume * 100)}% · {len(player.queue)} in queue")
     return embed
@@ -593,6 +594,9 @@ class PlayerControls(discord.ui.View):
         if player and player.autoplay:
             self.autoplay_mode.label = "Autoplay: on"
             self.autoplay_mode.style = discord.ButtonStyle.success
+        if player and player.settings.stay_247:
+            self.stay_mode.label = "24/7: on"
+            self.stay_mode.style = discord.ButtonStyle.success
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         vc = interaction.guild.voice_client
@@ -662,6 +666,20 @@ class PlayerControls(discord.ui.View):
         if player:
             player.autoplay = not player.autoplay
             await self._redraw(interaction)
+
+    @discord.ui.button(label="24/7: off", emoji="♾️", style=discord.ButtonStyle.secondary, custom_id="musicbot:247", row=2)
+    async def stay_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = await guard(interaction)
+        if not player:
+            return
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("Only server managers can turn 24/7 mode on or off.",
+                                                           ephemeral=True)
+        on = not player.settings.stay_247
+        set_247(player, on, interaction.guild.voice_client.channel, interaction.channel)
+        await self._redraw(interaction)
+        await interaction.followup.send(f"♾️ **{interaction.user.display_name}** turned 24/7 mode **{'on' if on else 'off'}**."
+                                        + (" I'll stay in this voice channel, even after a restart." if on else ""))
 
     @discord.ui.button(label="Queue", emoji="📜", style=discord.ButtonStyle.secondary, custom_id="musicbot:queue", row=1)
     async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1209,9 +1227,9 @@ async def stay_247(interaction: discord.Interaction, mode: Literal["on", "off"])
     guild = interaction.guild
     player = get_player(guild.id)
     if mode == "off":
-        player.settings.stay_247 = False
-        storage.save_settings(player.settings)
-        return await interaction.response.send_message("24/7 mode is off. I'll leave a minute after everyone else does.")
+        set_247(player, False)
+        await interaction.response.send_message("24/7 mode is off. I'll leave a minute after everyone else does.")
+        return await refresh_now_playing(guild)
 
     vc = guild.voice_client
     voice = interaction.user.voice
@@ -1227,10 +1245,17 @@ async def stay_247(interaction: discord.Interaction, mode: Literal["on", "off"])
             log.exception("Could not join voice channel for 24/7")
             return await interaction.followup.send("I couldn't join that voice channel.")
     player.text_channel = interaction.channel
+    set_247(player, True, channel, interaction.channel)
+    await interaction.followup.send(f"♾️ 24/7 mode is on. I'll stay in {channel.mention}, and rejoin it after a restart.")
+    await refresh_now_playing(guild)
+
+
+def set_247(player: GuildPlayer, on: bool, channel=None, text_channel=None):
     s = player.settings
-    s.stay_247, s.voice_channel_id, s.text_channel_id = True, channel.id, interaction.channel.id
+    s.stay_247 = on
+    if on:
+        s.voice_channel_id, s.text_channel_id = channel.id, text_channel.id
     storage.save_settings(s)
-    await interaction.followup.send(f"📻 24/7 mode is on. I'll stay in {channel.mention}, and rejoin it after a restart.")
 
 
 # ---- commands: profile and stats ----
@@ -1245,11 +1270,46 @@ def _song_link(title: str, url: str | None) -> str:
     return f"[{title}]({url})" if url and url.startswith("http") else title
 
 
-def profile_embed(member: discord.Member, guild: discord.Guild, p: storage.Profile, shared: bool) -> discord.Embed:
-    embed = discord.Embed(title=f"🎧 {member.display_name}'s music profile", color=0x5865F2)
+PROFILE_COLORS = {
+    "blurple": 0x5865F2, "red": 0xED4245, "orange": 0xF57C1F, "yellow": 0xFEE75C, "green": 0x57F287,
+    "teal": 0x1ABC9C, "blue": 0x3498DB, "purple": 0x9B59B6, "pink": 0xEB459E, "white": 0xFFFFFF, "black": 0x23272A,
+}
+
+# Badges, earned automatically. For each kind only the highest tier reached is shown.
+BADGE_TIERS = [
+    (lambda p: p.total_seconds / 3600, [(1, "🎧 1h listener"), (10, "🎶 10h listener"), (100, "👑 100h listener")]),
+    (lambda p: p.best_streak, [(7, "🔥 7-day streak"), (30, "☄️ 30-day streak"), (100, "🌟 100-day streak")]),
+    (lambda p: p.songs_heard, [(100, "💯 100 songs"), (1000, "🏆 1,000 songs")]),
+    (lambda p: p.songs_requested, [(50, "📀 50 requests"), (500, "💿 500 requests")]),
+    (lambda p: len(p.listened_with), [(3, "👥 Social listener")]),
+]
+
+
+def earned_badges(p: storage.Profile) -> list[str]:
+    badges = []
+    for measure, tiers in BADGE_TIERS:
+        value = measure(p)
+        reached = [label for needed, label in tiers if value >= needed]
+        if reached:
+            badges.append(reached[-1])
+    return badges
+
+
+def profile_embed(member: discord.Member, guild: discord.Guild, p: storage.Profile, shared: bool,
+                  style: storage.ProfileStyle | None = None) -> discord.Embed:
+    style = style or storage.ProfileStyle()
+    embed = discord.Embed(title=f"{style.emoji or '🎧'} {member.display_name}'s music profile"[:256],
+                          color=style.color if style.color is not None else 0x5865F2)
     embed.set_thumbnail(url=member.display_avatar.url)
+    lines = [f"*{style.bio}*"] if style.bio else []
     if not p.total_seconds and not p.songs_requested:
-        embed.description = "No listening yet. Listen to music with Musica in a voice channel and your stats show up here."
+        lines.append("No listening yet. Listen to music with Musica in a voice channel and your stats show up here.")
+    embed.description = "\n\n".join(lines) or None
+    if style.fav_title:
+        embed.add_field(name="⭐ Favorite song", value=_song_link(style.fav_title, style.fav_url), inline=False)
+    badges = earned_badges(p)
+    if badges:
+        embed.add_field(name="🏅 Badges", value=" · ".join(badges), inline=False)
     embed.add_field(name="Listening time", value=format_listen_time(p.total_seconds))
     embed.add_field(name="Songs", value=f"{p.songs_heard} heard · {p.songs_requested} requested")
     embed.add_field(name="Streak", value=f"🔥 {p.streak} day{'s' if p.streak != 1 else ''} · best {p.best_streak}")
@@ -1281,7 +1341,8 @@ async def profile(interaction: discord.Interaction, share: bool = False):
     if not storage.is_tracking(member.id):
         return await interaction.response.send_message(
             "Tracking is off for you, so there's no profile. Turn it on with `/tracking on`.", ephemeral=True)
-    embed = profile_embed(member, interaction.guild, storage.get_profile(member.id, interaction.guild.id), share)
+    embed = profile_embed(member, interaction.guild, storage.get_profile(member.id, interaction.guild.id), share,
+                          storage.get_style(member.id))
     if share:
         return await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     if isinstance(interaction, PrefixInteraction):  # a chat reply can't be private, so use DMs
@@ -1293,6 +1354,82 @@ async def profile(interaction: discord.Interaction, share: bool = False):
         return await interaction.response.send_message(
             "📬 I sent your profile to your DMs. Use `M.profile share` to show it here.", ephemeral=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+CUSTOM_EMOJI = re.compile(r"<a?:\w{2,32}:\d{15,25}>")
+
+
+@tree.command(name="editprofile", description="Decorate your profile: color, bio, emoji or favorite song")
+@app_commands.describe(setting="What to change",
+                       value="The new value. Use 'clear' to remove it. For favorite, leave empty to use the current song")
+async def edit_profile(interaction: discord.Interaction,
+                       setting: Literal["color", "bio", "emoji", "favorite", "reset"], value: str | None = None):
+    user_id = interaction.user.id
+    value = value.strip() if value else None
+    clearing = value is not None and value.lower() in ("clear", "none", "remove")
+
+    if setting == "reset":
+        storage.reset_style(user_id)
+        return await interaction.response.send_message("🧽 Your profile decorations were reset.", ephemeral=True)
+
+    if setting == "color":
+        if clearing:
+            storage.update_style(user_id, color=None)
+            return await interaction.response.send_message("🎨 Color reset to the default.", ephemeral=True)
+        hex_match = re.fullmatch(r"#?([0-9a-fA-F]{6})", value or "")
+        color = PROFILE_COLORS.get((value or "").lower()) or (int(hex_match.group(1), 16) if hex_match else None)
+        if color is None:
+            return await interaction.response.send_message(
+                f"Pick a color: {', '.join(PROFILE_COLORS)}, or a hex code like `#ff66aa`.", ephemeral=True)
+        storage.update_style(user_id, color=color)
+        return await interaction.response.send_message(f"🎨 Profile color set to **{value}**. See it with `/profile`.",
+                                                       ephemeral=True)
+
+    if setting == "bio":
+        if not value or clearing:
+            storage.update_style(user_id, bio=None)
+            return await interaction.response.send_message("💬 Bio removed.", ephemeral=True)
+        if len(value) > 100:
+            return await interaction.response.send_message("Your bio can be at most 100 characters.", ephemeral=True)
+        if re.search(r"https?://|discord\.gg/|www\.", value, re.I):
+            return await interaction.response.send_message("Links aren't allowed in bios.", ephemeral=True)
+        storage.update_style(user_id, bio=discord.utils.escape_mentions(value))
+        return await interaction.response.send_message("💬 Bio saved. See it with `/profile`.", ephemeral=True)
+
+    if setting == "emoji":
+        if not value or clearing:
+            storage.update_style(user_id, emoji=None)
+            return await interaction.response.send_message("✨ Emoji reset to 🎧.", ephemeral=True)
+        if not (CUSTOM_EMOJI.fullmatch(value) or (len(value) <= 8 and not any(c.isalnum() or c.isspace() for c in value))):
+            return await interaction.response.send_message("Send just an emoji, like 🎸 or 🌙.", ephemeral=True)
+        storage.update_style(user_id, emoji=value)
+        return await interaction.response.send_message(f"✨ Profile emoji set to {value}.", ephemeral=True)
+
+    # favorite song
+    if clearing:
+        storage.update_style(user_id, fav_title=None, fav_url=None)
+        return await interaction.response.send_message("⭐ Favorite song removed.", ephemeral=True)
+    if not value:
+        player = players.get(interaction.guild.id)
+        if not player or not player.current:
+            return await interaction.response.send_message(
+                "Nothing is playing. Play your favorite song first, or give its name.", ephemeral=True)
+        track = player.current
+    else:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            track = (await fetch_tracks(value if value.startswith("http") else f"ytsearch1:{value}", "you"))[0][0]
+        except Exception:
+            return await reply(interaction, "I couldn't find that song.")
+    storage.update_style(user_id, fav_title=track.title[:200], fav_url=track.url)
+    await reply(interaction, f"⭐ Favorite song set to **{track.title}**.")
+
+
+@edit_profile.autocomplete("value")
+async def edit_profile_value_autocomplete(interaction: discord.Interaction, current: str):
+    if getattr(interaction.namespace, "setting", None) != "color":
+        return []
+    return [app_commands.Choice(name=name, value=name) for name in PROFILE_COLORS if current.lower() in name][:25]
 
 
 @tree.command(description="Turn listening stats on or off for you (off also deletes your stats)")
@@ -1372,7 +1509,8 @@ HELP_SECTIONS = {
         ("/autoplay", "Keep playing similar songs when the queue ends"),
     ],
     "👤 You": [
-        ("/profile", "Your stats: listening time, top songs and artists, streak, who you listen with"),
+        ("/profile", "Your stats: listening time, top songs and artists, streak, badges, who you listen with"),
+        ("/editprofile", "Decorate it: color, bio, emoji, favorite song"),
         ("/grab", "Send the current song to your DMs"),
         ("/tracking", "Turn your listening stats on or off"),
     ],
@@ -1398,7 +1536,7 @@ HELP_SECTIONS = {
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(title="🎵 Musica commands", color=0x5865F2,
                           description="Join a voice channel and use `/play`. The player card has buttons for "
-                                      "back, pause, skip, stop, loop, shuffle, autoplay, queue and lyrics.\n\n"
+                                      "back, pause, skip, stop, loop, shuffle, autoplay, 24/7, queue and lyrics.\n\n"
                                       f"Every command also works with the **`{PREFIX}`** prefix, like `{PREFIX}play`. "
                                       f"Short versions: `{PREFIX}p` play · `{PREFIX}s` skip · `{PREFIX}q` queue · "
                                       f"`{PREFIX}np` now playing · `{PREFIX}back` previous · `{PREFIX}vol` volume · "
@@ -1427,7 +1565,7 @@ class ConfirmDelete(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         count = storage.delete_user_data(self.user_id)
         await interaction.response.edit_message(
-            content=f"🗑️ Done. Deleted {count} saved playlist(s) and your listening stats. "
+            content=f"🗑️ Done. Deleted {count} saved playlist(s), your listening stats and profile decorations. "
                     "Nothing else about you is stored.", view=None)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -1439,7 +1577,7 @@ class ConfirmDelete(discord.ui.View):
 async def delete_my_data(interaction: discord.Interaction):
     names = storage.list_playlists(interaction.user.id)
     await interaction.response.send_message(
-        f"This deletes your {len(names)} saved playlist(s) and your listening stats. That's all the data the bot "
+        f"This deletes your {len(names)} saved playlist(s), your listening stats and profile decorations. That's all the data the bot "
         f"keeps about you ([Privacy Policy]({PRIVACY_URL})). This can't be undone.",
         view=ConfirmDelete(interaction.user.id), ephemeral=True)
 

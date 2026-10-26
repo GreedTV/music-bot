@@ -20,6 +20,7 @@ Saved data is stored in a database file on the computer that runs the bot.
 | **Saved playlists:** your Discord user ID, each playlist's name and creation time, and its songs' titles, links and lengths | So `/playlist` can save and play your playlists | Until you delete them |
 | **Server settings:** the server's ID, volume, autoplay on/off, DJ role ID, 24/7 on/off, and the voice and text channel IDs used for 24/7 mode | So each server keeps its settings after a restart | Until the bot is removed from the server |
 | **Listening stats:** your user ID; how long you listened per server and per day; the songs you heard (title, link, guessed artist, play count, time); and how long you listened together with each other person in the same server | For `/profile` and the `/top` leaderboard | Until you use `/tracking off` or `/deletemydata` |
+| **Profile decorations:** your user ID, and the color, bio, emoji and favorite song (title and link) you choose with `/editprofile` | To decorate your `/profile` | Until you change them, use `/editprofile reset`, or `/deletemydata` |
 | **Play history:** for each song played in a server: the server's ID, the song's title, link and artist, when it played, and the user ID of who added it | For `/history`, `/top` and your "songs requested" count | 60 days |
 
 ### How listening stats work
@@ -56,8 +57,8 @@ Song thumbnails in the player card are loaded from YouTube's image servers (i.yt
 ## Deleting your data
 - `/playlist delete` deletes one playlist.
 - `/tracking off` deletes your listening stats and stops new ones from being collected.
-- `/deletemydata` deletes all your saved playlists and listening stats, and removes your user ID from the play
-  history. That's everything Musica stores about you.
+- `/deletemydata` deletes all your saved playlists, listening stats and profile decorations, and removes your user
+  ID from the play history. That's everything Musica stores about you.
 - A server's settings are deleted when Musica is removed from that server.
 - For anything else, open an issue at <https://github.com/GreedTV/music-bot/issues>.
 
