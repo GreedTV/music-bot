@@ -38,7 +38,7 @@ Only people in the bot's voice channel can use them. `/nowplaying` brings the ca
 | `/loop off\|song\|queue` | Repeats the current song or the whole queue |
 | `/autoplay on\|off` | Keep playing similar songs when the queue ends (remembered per server) |
 | `/playlist save\|add\|play\|show\|list\|delete` | Your own saved playlists, usable in any server |
-| `/profile [share]` | Your stats: listening time, songs heard/requested, top songs and artists, streak, who you listen with, top servers. Only you see it unless you share it (`M.profile` goes to your DMs) |
+| `/profile` | Posts your profile card in the channel: listening time, songs heard/requested, top songs and artists, streak, badges, who you listen with, top servers. Only you can show yours: `M.profile @someone` gets a playful "that's private" reply. A server the bot has left shows as "Unknown server", and someone it can't look up as "Unknown user" |
 | `/editprofile <setting> [value] [image]` | Decorate your profile card: `color` (name or `#hex`), `bio` (100 characters, no links), `favorite` (your favorite song, shown as typed), `background` (attach a picture; with the prefix, attach it to the `M.editprofile background` message), or `reset`. `clear` removes one. Badges are earned automatically |
 | `/tracking on\|off` | Turn your listening stats on or off (off deletes them) |
 | `/top` | This server's most played songs and biggest listeners in the last 7 days |

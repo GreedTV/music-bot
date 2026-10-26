@@ -1326,15 +1326,16 @@ def profile_embed(member: discord.Member, guild: discord.Guild, p: storage.Profi
         embed.add_field(name=f"Listened with most in {guild.name}"[:256], inline=False, value="\n".join(
             f"`{i}.` <@{uid}> · {format_listen_time(s)}" for i, (uid, s) in enumerate(p.listened_with, 1)))
     if p.top_servers:
-        names = []
-        for gid, s in p.top_servers:
-            g = client.get_guild(gid)
-            names.append(f"{g.name if g else 'A server I left'} · {format_listen_time(s)}")
+        names = [f"{_server_name(gid)} · {format_listen_time(s)}" for gid, s in p.top_servers]
         embed.add_field(name="Top servers", inline=False,
                         value="\n".join(f"`{i}.` {n}" for i, n in enumerate(names, 1)))
-    embed.set_footer(text=f"Shared by {member.display_name}" if shared else
-                     "Only you can see this · /profile share:True shows it to everyone · /tracking off stops tracking")
+    embed.set_footer(text="Type /profile or M.profile to show yours · /editprofile to decorate it")
     return embed
+
+
+def _server_name(guild_id: int) -> str:
+    guild = client.get_guild(guild_id)
+    return guild.name if guild else "Unknown server"  # e.g. a server the bot was removed from
 
 
 async def _display_name(guild: discord.Guild, user_id: int) -> str:
@@ -1343,26 +1344,22 @@ async def _display_name(guild: discord.Guild, user_id: int) -> str:
         try:
             user = await client.fetch_user(user_id)
         except discord.HTTPException:
-            return "Someone"
+            return "Unknown user"
     return user.display_name
 
 
-async def build_profile(member: discord.Member, guild: discord.Guild, shared: bool) -> tuple[discord.Embed, discord.File | None]:
+async def build_profile(member: discord.Member, guild: discord.Guild) -> tuple[discord.Embed, discord.File | None]:
     """The profile as a picture card inside an embed (or the text version if drawing fails)."""
     p = storage.get_profile(member.id, guild.id)
     style = storage.get_style(member.id)
+    servers = [f"{_server_name(gid)} · {format_listen_time(seconds)}" for gid, seconds in p.top_servers]
     accent = style.color if style.color is not None else 0x5865F2
-    footer = (f"Shared by {member.display_name}" if shared else
-              "Only you can see this · /profile share:True shows it to everyone · /editprofile to decorate it")
+    footer = "Type /profile or M.profile to show yours · /editprofile to decorate it"
     try:
         try:
             avatar = await member.display_avatar.with_size(256).with_static_format("png").read()
         except discord.HTTPException:
             avatar = None
-        servers = []
-        for gid, seconds in p.top_servers:
-            g = client.get_guild(gid)
-            servers.append(f"{g.name if g else 'A server I left'} · {format_listen_time(seconds)}")
         data = card.CardData(
             name=member.display_name, accent=accent, bio=style.bio, favorite=style.favorite, avatar=avatar,
             background=storage.load_background(member.id), listening=format_listen_time(p.total_seconds),
@@ -1374,33 +1371,38 @@ async def build_profile(member: discord.Member, guild: discord.Guild, shared: bo
         jpeg = await asyncio.to_thread(card.render_profile, data)
     except Exception:
         log.exception("Could not draw the profile card")
-        return profile_embed(member, guild, p, shared, style), None
+        return profile_embed(member, guild, p, True, style), None
     embed = discord.Embed(color=accent)
     embed.set_image(url="attachment://profile.jpg")
     embed.set_footer(text=footer)
     return embed, discord.File(io.BytesIO(jpeg), filename="profile.jpg")
 
 
-@tree.command(description="Your music profile: listening time, top songs, who you listen with. Only you see it")
-@app_commands.describe(share="Post it in the channel so everyone can see it")
-async def profile(interaction: discord.Interaction, share: bool = False):
+NOSY_REPLIES = [
+    "🕵️ Nice try, detective! **{name}**'s profile is top secret. Only they can show it, by typing `M.profile` themselves.",
+    "🔒 Whoa there! That's **{name}**'s private info. Ask them nicely and maybe they'll show you 👀",
+    "🙈 Peeking at other people's profiles? Not on my watch. **{name}** can show theirs with `M.profile`.",
+    "🚫 Access denied! **{name}**'s music taste is classified. 🎧",
+    "😏 Curious about **{name}**'s secret playlist? Me too, but rules are rules. They have to show it themselves.",
+]
+BOT_PROFILE_REPLY = "🤖 Me? My only stat is *infinite music*. 🎶 Try `M.profile` on yourself!"
+
+
+@tree.command(description="Show your music profile card: listening time, top songs, badges, who you listen with")
+@app_commands.describe(user="Only you can show your own profile 😉")
+async def profile(interaction: discord.Interaction, user: discord.User | None = None):
     member = interaction.user
+    if user is not None and user.id != member.id:
+        text = BOT_PROFILE_REPLY if getattr(user, "bot", False) else \
+            random.choice(NOSY_REPLIES).format(name=getattr(user, "display_name", None) or "that person")
+        return await interaction.response.send_message(text, ephemeral=True)
     if not storage.is_tracking(member.id):
         return await interaction.response.send_message(
             "Tracking is off for you, so there's no profile. Turn it on with `/tracking on`.", ephemeral=True)
-    to_dms = isinstance(interaction, PrefixInteraction) and not share  # a chat reply can't be private, so use DMs
-    await interaction.response.defer(ephemeral=not share, thinking=True)
-    embed, file = await build_profile(member, interaction.guild, share)
+    await interaction.response.defer(thinking=True)
+    embed, file = await build_profile(member, interaction.guild)
     extra = {"file": file} if file else {}
-    if to_dms:
-        try:
-            await member.send(embed=embed, **extra)
-        except discord.HTTPException:
-            return await reply(interaction,
-                               "I can't DM you. Use `/profile` (only you see it), or `M.profile share` to post it here.")
-        return await reply(interaction, "📬 I sent your profile to your DMs. Use `M.profile share` to show it here.")
-    await interaction.followup.send(embed=embed, ephemeral=not share, allowed_mentions=discord.AllowedMentions.none(),
-                                    **extra)
+    await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none(), **extra)
 
 
 def _no_links(text: str) -> bool:
@@ -1565,7 +1567,7 @@ HELP_SECTIONS = {
         ("/autoplay", "Keep playing similar songs when the queue ends"),
     ],
     "👤 You": [
-        ("/profile", "Your stats: listening time, top songs and artists, streak, badges, who you listen with"),
+        ("/profile", "Show your profile card: listening time, top songs and artists, streak, badges"),
         ("/editprofile", "Decorate it: color, bio, favorite song, background picture"),
         ("/grab", "Send the current song to your DMs"),
         ("/tracking", "Turn your listening stats on or off"),
@@ -1712,7 +1714,8 @@ def prefix_usage(cmd: app_commands.Command) -> str:
     return f"{PREFIX}{cmd.qualified_name} {args}".strip()
 
 
-def _convert_prefix_arg(guild: discord.Guild, cmd: app_commands.Command, p: app_commands.Parameter, token: str):
+def _convert_prefix_arg(guild: discord.Guild, cmd: app_commands.Command, p: app_commands.Parameter, token: str,
+                        mentions=()):
     if p.choices:
         for choice in p.choices:
             if token.lower() in (choice.name.lower(), str(choice.value).lower()):
@@ -1720,7 +1723,7 @@ def _convert_prefix_arg(guild: discord.Guild, cmd: app_commands.Command, p: app_
                 return choice if wants_choice else choice.value
         raise ValueError(f"`{p.display_name}` must be one of: {', '.join(str(c.value) for c in p.choices)}.")
     if p.type is discord.AppCommandOptionType.boolean:
-        if token.lower() in ("true", "yes", "on", "1", p.name.lower()):  # "M.profile share" means share=True
+        if token.lower() in ("true", "yes", "on", "1", p.name.lower()):  # typing the option's name means yes
             return True
         if token.lower() in ("false", "no", "off", "0"):
             return False
@@ -1733,6 +1736,13 @@ def _convert_prefix_arg(guild: discord.Guild, cmd: app_commands.Command, p: app_
         if (p.min_value is not None and value < p.min_value) or (p.max_value is not None and value > p.max_value):
             raise ValueError(f"`{p.display_name}` must be between {p.min_value} and {p.max_value if p.max_value is not None else '∞'}.")
         return value
+    if p.type is discord.AppCommandOptionType.user:
+        user_id = token.strip("<@!>")
+        found = next((m for m in mentions if str(m.id) == user_id), None) if user_id.isdigit() else None
+        found = found or (guild.get_member(int(user_id)) if user_id.isdigit() else None)
+        if not found:
+            raise ValueError("Mention someone, like @name.")
+        return found
     if p.type is discord.AppCommandOptionType.role:
         role_id = token.strip("<@&>")
         role = guild.get_role(int(role_id)) if role_id.isdigit() else \
@@ -1746,7 +1756,7 @@ def _convert_prefix_arg(guild: discord.Guild, cmd: app_commands.Command, p: app_
 
 
 def parse_prefix_args(guild: discord.Guild, cmd: app_commands.Command, text: str,
-                      attachments: list[discord.Attachment] = ()) -> dict:
+                      attachments: list[discord.Attachment] = (), mentions: list = ()) -> dict:
     """Turn 'M.move 3 1' into {'from_position': 3, 'to_position': 1}. The last text option takes the rest,
     and file options take the files attached to the message."""
     kwargs, rest = {}, text.strip()
@@ -1769,7 +1779,7 @@ def parse_prefix_args(guild: discord.Guild, cmd: app_commands.Command, text: str
         else:
             token, _, rest = rest.partition(" ")
             rest = rest.strip()
-        kwargs[p.name] = _convert_prefix_arg(guild, cmd, p, token)
+        kwargs[p.name] = _convert_prefix_arg(guild, cmd, p, token, mentions)
     return kwargs
 
 
@@ -1796,7 +1806,7 @@ async def on_message(message: discord.Message):
     if required and not message.author.guild_permissions >= required:
         return await message.reply("Only server managers can use that.", mention_author=False)
     try:
-        kwargs = parse_prefix_args(message.guild, cmd, rest, message.attachments)
+        kwargs = parse_prefix_args(message.guild, cmd, rest, message.attachments, message.mentions)
     except ValueError as e:
         return await message.reply(f"{e}\nUsage: `{prefix_usage(cmd)}`", mention_author=False)
 

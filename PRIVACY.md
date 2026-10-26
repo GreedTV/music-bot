@@ -27,8 +27,11 @@ Saved data is stored in a database file on the computer that runs the bot.
 ### How listening stats work
 - While music plays, the bot checks every 15 seconds who is in its voice channel. Deafened people aren't counted.
   The bot never hears anyone. It only sees who is in the channel, which Discord shows to everyone there.
-- **Your profile is private.** `/profile` is only shown to you, and `M.profile` is sent to your DMs. Others only
-  see it if you choose to share it (`/profile share:True` or `M.profile share`).
+- **Only you can show your profile.** When you type `/profile` or `M.profile`, your profile card is posted in that
+  channel. Nobody else can bring up your profile; if someone tries (like `M.profile @you`), the bot refuses.
+- **What the card shows:** your stats, top songs and artists, the people you listened with most in that server,
+  and your top 3 servers by name (a server the bot has left shows as "Unknown server"). Everyone in the channel
+  can see it, so only post your profile where you're happy to show this.
 - "Listened with" only counts and shows people from the same server.
 - `/top` shows each server's most played songs and biggest listeners from the last 7 days to everyone in that
   server. People with tracking off aren't counted or shown.
