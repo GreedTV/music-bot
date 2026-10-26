@@ -3,6 +3,7 @@ vote-skip and a DJ role, lyrics, audio effects, saved playlists and 24/7 mode.""
 import asyncio
 import ctypes
 import hashlib
+import io
 import json
 import logging
 import logging.handlers
@@ -24,6 +25,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
+import card
 import storage
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1297,16 +1299,17 @@ def earned_badges(p: storage.Profile) -> list[str]:
 
 def profile_embed(member: discord.Member, guild: discord.Guild, p: storage.Profile, shared: bool,
                   style: storage.ProfileStyle | None = None) -> discord.Embed:
+    """Text version of the profile, used if drawing the picture card fails."""
     style = style or storage.ProfileStyle()
-    embed = discord.Embed(title=f"{style.emoji or '🎧'} {member.display_name}'s music profile"[:256],
+    embed = discord.Embed(title=f"🎧 {member.display_name}'s music profile"[:256],
                           color=style.color if style.color is not None else 0x5865F2)
     embed.set_thumbnail(url=member.display_avatar.url)
     lines = [f"*{style.bio}*"] if style.bio else []
     if not p.total_seconds and not p.songs_requested:
         lines.append("No listening yet. Listen to music with Musica in a voice channel and your stats show up here.")
     embed.description = "\n\n".join(lines) or None
-    if style.fav_title:
-        embed.add_field(name="⭐ Favorite song", value=_song_link(style.fav_title, style.fav_url), inline=False)
+    if style.favorite:
+        embed.add_field(name="⭐ Favorite song", value=style.favorite, inline=False)
     badges = earned_badges(p)
     if badges:
         embed.add_field(name="🏅 Badges", value=" · ".join(badges), inline=False)
@@ -1334,6 +1337,50 @@ def profile_embed(member: discord.Member, guild: discord.Guild, p: storage.Profi
     return embed
 
 
+async def _display_name(guild: discord.Guild, user_id: int) -> str:
+    user = guild.get_member(user_id) or client.get_user(user_id)
+    if user is None:
+        try:
+            user = await client.fetch_user(user_id)
+        except discord.HTTPException:
+            return "Someone"
+    return user.display_name
+
+
+async def build_profile(member: discord.Member, guild: discord.Guild, shared: bool) -> tuple[discord.Embed, discord.File | None]:
+    """The profile as a picture card inside an embed (or the text version if drawing fails)."""
+    p = storage.get_profile(member.id, guild.id)
+    style = storage.get_style(member.id)
+    accent = style.color if style.color is not None else 0x5865F2
+    footer = (f"Shared by {member.display_name}" if shared else
+              "Only you can see this · /profile share:True shows it to everyone · /editprofile to decorate it")
+    try:
+        try:
+            avatar = await member.display_avatar.with_size(256).with_static_format("png").read()
+        except discord.HTTPException:
+            avatar = None
+        servers = []
+        for gid, seconds in p.top_servers:
+            g = client.get_guild(gid)
+            servers.append(f"{g.name if g else 'A server I left'} · {format_listen_time(seconds)}")
+        data = card.CardData(
+            name=member.display_name, accent=accent, bio=style.bio, favorite=style.favorite, avatar=avatar,
+            background=storage.load_background(member.id), listening=format_listen_time(p.total_seconds),
+            songs_heard=p.songs_heard, songs_requested=p.songs_requested, streak=p.streak, best_streak=p.best_streak,
+            badges=earned_badges(p), top_songs=[(title, plays) for title, _, plays in p.top_songs],
+            top_artists=p.top_artists,
+            listened_with=[(await _display_name(guild, uid), format_listen_time(s)) for uid, s in p.listened_with],
+            top_servers=servers)
+        jpeg = await asyncio.to_thread(card.render_profile, data)
+    except Exception:
+        log.exception("Could not draw the profile card")
+        return profile_embed(member, guild, p, shared, style), None
+    embed = discord.Embed(color=accent)
+    embed.set_image(url="attachment://profile.jpg")
+    embed.set_footer(text=footer)
+    return embed, discord.File(io.BytesIO(jpeg), filename="profile.jpg")
+
+
 @tree.command(description="Your music profile: listening time, top songs, who you listen with. Only you see it")
 @app_commands.describe(share="Post it in the channel so everyone can see it")
 async def profile(interaction: discord.Interaction, share: bool = False):
@@ -1341,36 +1388,62 @@ async def profile(interaction: discord.Interaction, share: bool = False):
     if not storage.is_tracking(member.id):
         return await interaction.response.send_message(
             "Tracking is off for you, so there's no profile. Turn it on with `/tracking on`.", ephemeral=True)
-    embed = profile_embed(member, interaction.guild, storage.get_profile(member.id, interaction.guild.id), share,
-                          storage.get_style(member.id))
-    if share:
-        return await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-    if isinstance(interaction, PrefixInteraction):  # a chat reply can't be private, so use DMs
+    to_dms = isinstance(interaction, PrefixInteraction) and not share  # a chat reply can't be private, so use DMs
+    await interaction.response.defer(ephemeral=not share, thinking=True)
+    embed, file = await build_profile(member, interaction.guild, share)
+    extra = {"file": file} if file else {}
+    if to_dms:
         try:
-            await member.send(embed=embed)
+            await member.send(embed=embed, **extra)
         except discord.HTTPException:
-            return await interaction.response.send_message(
-                "I can't DM you. Use `/profile` (only you see it), or `M.profile share` to post it here.", ephemeral=True)
-        return await interaction.response.send_message(
-            "📬 I sent your profile to your DMs. Use `M.profile share` to show it here.", ephemeral=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+            return await reply(interaction,
+                               "I can't DM you. Use `/profile` (only you see it), or `M.profile share` to post it here.")
+        return await reply(interaction, "📬 I sent your profile to your DMs. Use `M.profile share` to show it here.")
+    await interaction.followup.send(embed=embed, ephemeral=not share, allowed_mentions=discord.AllowedMentions.none(),
+                                    **extra)
 
 
-CUSTOM_EMOJI = re.compile(r"<a?:\w{2,32}:\d{15,25}>")
+def _no_links(text: str) -> bool:
+    return not re.search(r"https?://|discord\.gg/|www\.", text, re.I)
 
 
-@tree.command(name="editprofile", description="Decorate your profile: color, bio, emoji or favorite song")
+@tree.command(name="editprofile", description="Decorate your profile: color, bio, favorite song or background picture")
 @app_commands.describe(setting="What to change",
-                       value="The new value. Use 'clear' to remove it. For favorite, leave empty to use the current song")
+                       value="The new value (for color, bio or favorite). Use 'clear' to remove it",
+                       image="For background: the picture to use")
 async def edit_profile(interaction: discord.Interaction,
-                       setting: Literal["color", "bio", "emoji", "favorite", "reset"], value: str | None = None):
+                       setting: Literal["color", "bio", "favorite", "background", "reset"],
+                       value: str | None = None, image: discord.Attachment | None = None):
     user_id = interaction.user.id
     value = value.strip() if value else None
     clearing = value is not None and value.lower() in ("clear", "none", "remove")
 
     if setting == "reset":
         storage.reset_style(user_id)
-        return await interaction.response.send_message("🧽 Your profile decorations were reset.", ephemeral=True)
+        return await interaction.response.send_message("🧽 Your profile decorations and background were reset.",
+                                                       ephemeral=True)
+
+    if setting == "background":
+        if clearing:
+            storage.delete_background(user_id)
+            return await interaction.response.send_message("🖼️ Background removed.", ephemeral=True)
+        if not image:
+            return await interaction.response.send_message(
+                "Attach a picture: `/editprofile setting:background image:` and pick a file. "
+                "With the prefix, type `M.editprofile background` and attach the picture to the message.",
+                ephemeral=True)
+        if image.size > card.MAX_BACKGROUND_BYTES or not (image.content_type or "").startswith("image/"):
+            return await interaction.response.send_message("Use a PNG, JPG, WebP or GIF picture up to 10 MB.",
+                                                           ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            jpeg = await asyncio.to_thread(card.prepare_background, await image.read())
+        except discord.HTTPException:
+            jpeg = None
+        if not jpeg:
+            return await reply(interaction, "I couldn't read that picture. Try a different PNG or JPG.")
+        storage.save_background(user_id, jpeg)
+        return await reply(interaction, "🖼️ Background set! See it with `/profile`.")
 
     if setting == "color":
         if clearing:
@@ -1391,38 +1464,21 @@ async def edit_profile(interaction: discord.Interaction,
             return await interaction.response.send_message("💬 Bio removed.", ephemeral=True)
         if len(value) > 100:
             return await interaction.response.send_message("Your bio can be at most 100 characters.", ephemeral=True)
-        if re.search(r"https?://|discord\.gg/|www\.", value, re.I):
+        if not _no_links(value):
             return await interaction.response.send_message("Links aren't allowed in bios.", ephemeral=True)
         storage.update_style(user_id, bio=discord.utils.escape_mentions(value))
         return await interaction.response.send_message("💬 Bio saved. See it with `/profile`.", ephemeral=True)
 
-    if setting == "emoji":
-        if not value or clearing:
-            storage.update_style(user_id, emoji=None)
-            return await interaction.response.send_message("✨ Emoji reset to 🎧.", ephemeral=True)
-        if not (CUSTOM_EMOJI.fullmatch(value) or (len(value) <= 8 and not any(c.isalnum() or c.isspace() for c in value))):
-            return await interaction.response.send_message("Send just an emoji, like 🎸 or 🌙.", ephemeral=True)
-        storage.update_style(user_id, emoji=value)
-        return await interaction.response.send_message(f"✨ Profile emoji set to {value}.", ephemeral=True)
-
-    # favorite song
-    if clearing:
-        storage.update_style(user_id, fav_title=None, fav_url=None)
+    # favorite song: saved exactly as typed
+    if not value or clearing:
+        storage.update_style(user_id, favorite=None)
         return await interaction.response.send_message("⭐ Favorite song removed.", ephemeral=True)
-    if not value:
-        player = players.get(interaction.guild.id)
-        if not player or not player.current:
-            return await interaction.response.send_message(
-                "Nothing is playing. Play your favorite song first, or give its name.", ephemeral=True)
-        track = player.current
-    else:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            track = (await fetch_tracks(value if value.startswith("http") else f"ytsearch1:{value}", "you"))[0][0]
-        except Exception:
-            return await reply(interaction, "I couldn't find that song.")
-    storage.update_style(user_id, fav_title=track.title[:200], fav_url=track.url)
-    await reply(interaction, f"⭐ Favorite song set to **{track.title}**.")
+    if len(value) > 80:
+        return await interaction.response.send_message("Keep it to 80 characters or less.", ephemeral=True)
+    if not _no_links(value):
+        return await interaction.response.send_message("Just type the song's name, without a link.", ephemeral=True)
+    storage.update_style(user_id, favorite=discord.utils.escape_mentions(value))
+    await interaction.response.send_message(f"⭐ Favorite song set to **{value}**.", ephemeral=True)
 
 
 @edit_profile.autocomplete("value")
@@ -1510,7 +1566,7 @@ HELP_SECTIONS = {
     ],
     "👤 You": [
         ("/profile", "Your stats: listening time, top songs and artists, streak, badges, who you listen with"),
-        ("/editprofile", "Decorate it: color, bio, emoji, favorite song"),
+        ("/editprofile", "Decorate it: color, bio, favorite song, background picture"),
         ("/grab", "Send the current song to your DMs"),
         ("/tracking", "Turn your listening stats on or off"),
     ],
@@ -1565,7 +1621,7 @@ class ConfirmDelete(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         count = storage.delete_user_data(self.user_id)
         await interaction.response.edit_message(
-            content=f"🗑️ Done. Deleted {count} saved playlist(s), your listening stats and profile decorations. "
+            content=f"🗑️ Done. Deleted {count} saved playlist(s), your listening stats, profile decorations and background. "
                     "Nothing else about you is stored.", view=None)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -1577,7 +1633,7 @@ class ConfirmDelete(discord.ui.View):
 async def delete_my_data(interaction: discord.Interaction):
     names = storage.list_playlists(interaction.user.id)
     await interaction.response.send_message(
-        f"This deletes your {len(names)} saved playlist(s), your listening stats and profile decorations. That's all the data the bot "
+        f"This deletes your {len(names)} saved playlist(s), your listening stats, profile decorations and background. That's all the data the bot "
         f"keeps about you ([Privacy Policy]({PRIVACY_URL})). This can't be undone.",
         view=ConfirmDelete(interaction.user.id), ephemeral=True)
 
@@ -1606,9 +1662,12 @@ class PrefixInteraction:
         self.followup = _PrefixFollowup(self)
         self._last: discord.Message | None = None
 
-    async def _send(self, content=None, *, embed=None, view=None, ephemeral=False, allowed_mentions=None, **_):
+    async def _send(self, content=None, *, embed=None, view=None, file=None, ephemeral=False, allowed_mentions=None,
+                    **_):
         kwargs = {"content": content, "embed": embed, "mention_author": False,
                   "allowed_mentions": allowed_mentions or discord.AllowedMentions.none()}
+        if file is not None:
+            kwargs["file"] = file
         if view is not None:
             kwargs["view"] = view
         elif ephemeral and embed is None:
@@ -1686,15 +1745,26 @@ def _convert_prefix_arg(guild: discord.Guild, cmd: app_commands.Command, p: app_
     return token
 
 
-def parse_prefix_args(guild: discord.Guild, cmd: app_commands.Command, text: str) -> dict:
-    """Turn 'M.move 3 1' into {'from_position': 3, 'to_position': 1}. The last text option takes the rest."""
+def parse_prefix_args(guild: discord.Guild, cmd: app_commands.Command, text: str,
+                      attachments: list[discord.Attachment] = ()) -> dict:
+    """Turn 'M.move 3 1' into {'from_position': 3, 'to_position': 1}. The last text option takes the rest,
+    and file options take the files attached to the message."""
     kwargs, rest = {}, text.strip()
+    files = list(attachments)
+    text_params = [i for i, p in enumerate(cmd.parameters) if p.type is discord.AppCommandOptionType.string]
+    last_text = text_params[-1] if text_params else -1
     for i, p in enumerate(cmd.parameters):
+        if p.type is discord.AppCommandOptionType.attachment:
+            if files:
+                kwargs[p.name] = files.pop(0)
+            elif p.required:
+                raise ValueError(f"Attach a file for `{p.display_name}`.")
+            continue
         if not rest:
             if p.required:
                 raise ValueError(f"Missing `{p.display_name}`.")
-            break
-        if p.type is discord.AppCommandOptionType.string and i == len(cmd.parameters) - 1:
+            continue
+        if i == last_text:
             token, rest = rest, ""
         else:
             token, _, rest = rest.partition(" ")
@@ -1726,7 +1796,7 @@ async def on_message(message: discord.Message):
     if required and not message.author.guild_permissions >= required:
         return await message.reply("Only server managers can use that.", mention_author=False)
     try:
-        kwargs = parse_prefix_args(message.guild, cmd, rest)
+        kwargs = parse_prefix_args(message.guild, cmd, rest, message.attachments)
     except ValueError as e:
         return await message.reply(f"{e}\nUsage: `{prefix_usage(cmd)}`", mention_author=False)
 

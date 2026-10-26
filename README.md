@@ -39,7 +39,7 @@ Only people in the bot's voice channel can use them. `/nowplaying` brings the ca
 | `/autoplay on\|off` | Keep playing similar songs when the queue ends (remembered per server) |
 | `/playlist save\|add\|play\|show\|list\|delete` | Your own saved playlists, usable in any server |
 | `/profile [share]` | Your stats: listening time, songs heard/requested, top songs and artists, streak, who you listen with, top servers. Only you see it unless you share it (`M.profile` goes to your DMs) |
-| `/editprofile <setting> [value]` | Decorate your profile: `color` (name or `#hex`), `bio` (100 characters, no links), `emoji`, `favorite` (current song, or a song name), or `reset`. `clear` removes one. Badges are earned automatically |
+| `/editprofile <setting> [value] [image]` | Decorate your profile card: `color` (name or `#hex`), `bio` (100 characters, no links), `favorite` (your favorite song, shown as typed), `background` (attach a picture; with the prefix, attach it to the `M.editprofile background` message), or `reset`. `clear` removes one. Badges are earned automatically |
 | `/tracking on\|off` | Turn your listening stats on or off (off deletes them) |
 | `/top` | This server's most played songs and biggest listeners in the last 7 days |
 | `/history` | The last 20 songs played in this server |
@@ -70,6 +70,8 @@ The bot's status shows **Type /help or M.help**.
 
 Without 24/7 mode, the bot leaves a minute after everyone else has left the voice channel.
 Saved playlists, server settings and listening stats are stored in `data/musicbot.db` (SQLite).
+`/profile` is drawn as a picture (`card.py`, using Pillow). Uploaded backgrounds are shrunk to the card's size
+(1100×680, about 150–200 KB) and kept in `data/backgrounds/`.
 Listening is counted every 15 seconds for everyone in the bot's voice channel who isn't deafened.
 
 ## Setup

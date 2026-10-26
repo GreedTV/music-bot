@@ -229,6 +229,7 @@ def delete_user_data(user_id: int) -> int:
         count = conn.execute("DELETE FROM playlists WHERE user_id = ?", (user_id,)).rowcount
         conn.execute("DELETE FROM profile_style WHERE user_id = ?", (user_id,))
         _delete_stats(conn, user_id)
+    delete_background(user_id)
     return count
 
 
@@ -238,12 +239,37 @@ def delete_user_data(user_id: int) -> int:
 class ProfileStyle:
     color: int | None = None
     bio: str | None = None
-    emoji: str | None = None
-    fav_title: str | None = None
-    fav_url: str | None = None
+    favorite: str | None = None  # free text, shown exactly as the user typed it
 
 
-_STYLE_FIELDS = ("color", "bio", "emoji", "fav_title", "fav_url")
+# (the old "emoji", "fav_url" and "bg_url" columns are no longer used)
+_STYLE_FIELDS = ("color", "bio", "fav_title")
+_STYLE_ATTRS = ("color", "bio", "favorite")
+
+def background_path(user_id: int) -> Path:
+    """Where a user's uploaded profile background is kept (already resized to the card's size)."""
+    return DB_PATH.parent / "backgrounds" / f"{user_id}.jpg"
+
+
+def save_background(user_id: int, jpeg: bytes):
+    path = background_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(jpeg)
+
+
+def load_background(user_id: int) -> bytes | None:
+    try:
+        return background_path(user_id).read_bytes()
+    except OSError:
+        return None
+
+
+def delete_background(user_id: int) -> bool:
+    try:
+        background_path(user_id).unlink()
+        return True
+    except OSError:
+        return False
 
 
 def get_style(user_id: int) -> ProfileStyle:
@@ -255,20 +281,21 @@ def get_style(user_id: int) -> ProfileStyle:
 
 def update_style(user_id: int, **changes):
     """Set some decoration fields (None clears one)."""
-    assert set(changes) <= set(_STYLE_FIELDS)
+    assert set(changes) <= set(_STYLE_ATTRS)
     style = get_style(user_id)
     for key, value in changes.items():
         setattr(style, key, value)
     with _connect() as conn:
         conn.execute(
-            f"INSERT INTO profile_style (user_id, {', '.join(_STYLE_FIELDS)}) VALUES (?, ?, ?, ?, ?, ?) "
+            f"INSERT INTO profile_style (user_id, {', '.join(_STYLE_FIELDS)}) VALUES (?, ?, ?, ?) "
             f"ON CONFLICT (user_id) DO UPDATE SET " + ", ".join(f"{f} = excluded.{f}" for f in _STYLE_FIELDS),
-            (user_id, *(getattr(style, f) for f in _STYLE_FIELDS)))
+            (user_id, *(getattr(style, a) for a in _STYLE_ATTRS)))
 
 
 def reset_style(user_id: int):
     with _connect() as conn:
         conn.execute("DELETE FROM profile_style WHERE user_id = ?", (user_id,))
+    delete_background(user_id)
 
 
 def _delete_stats(conn: sqlite3.Connection, user_id: int):

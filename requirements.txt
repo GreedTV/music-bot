@@ -3,3 +3,4 @@ yt-dlp
 imageio-ffmpeg
 python-dotenv
 aiohttp
+pillow

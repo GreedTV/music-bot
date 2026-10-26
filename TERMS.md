@@ -17,7 +17,8 @@ You must follow [Discord's Terms of Service](https://discord.com/terms) and
 ## 3. Acceptable use
 You agree not to:
 - spam commands, or try to overload, crash or disrupt the bot;
-- use the bot to harass people, or put offensive or illegal words in playlist names;
+- use the bot to harass people, or put offensive or illegal words in playlist names or profile bios;
+- upload profile backgrounds that are sexual, violent, hateful or illegal, or that you don't have the right to use;
 - try to get access to data that isn't yours, or to the computer running the bot;
 - use the bot to break any law, or anyone else's rights, including copyright.
 
