@@ -1356,13 +1356,12 @@ async def _display_name(guild: discord.Guild, user_id: int) -> str:
     return user.display_name
 
 
-async def build_profile(member: discord.Member, guild: discord.Guild) -> tuple[discord.Embed, discord.File | None]:
-    """The profile as a picture card inside an embed (or the text version if drawing fails)."""
+async def build_profile(member: discord.Member, guild: discord.Guild) -> tuple[discord.Embed | None, discord.File | None]:
+    """The profile as a plain picture, like Jockie's: (None, file). If drawing fails: (text embed, None)."""
     p = storage.get_profile(member.id, guild.id)
     style = storage.get_style(member.id)
     servers = [(_server_name(gid), format_listen_time(seconds)) for gid, seconds in p.top_servers]
     accent = style.color if style.color is not None else 0x5865F2
-    footer = "Type /profile or M.profile to show yours · /editprofile to decorate it"
     try:
         try:
             avatar = await member.display_avatar.with_size(256).with_static_format("png").read()
@@ -1380,10 +1379,7 @@ async def build_profile(member: discord.Member, guild: discord.Guild) -> tuple[d
     except Exception:
         log.exception("Could not draw the profile card")
         return profile_embed(member, guild, p, True, style), None
-    embed = discord.Embed(color=accent)
-    embed.set_image(url="attachment://profile.jpg")
-    embed.set_footer(text=footer)
-    return embed, discord.File(io.BytesIO(jpeg), filename="profile.jpg")
+    return None, discord.File(io.BytesIO(jpeg), filename="profile.jpg")
 
 
 NOSY_REPLIES = [
@@ -1409,93 +1405,198 @@ async def profile(interaction: discord.Interaction, user: discord.User | None = 
             "Tracking is off for you, so there's no profile. Turn it on with `/tracking on`.", ephemeral=True)
     await interaction.response.defer(thinking=True)
     embed, file = await build_profile(member, interaction.guild)
-    extra = {"file": file} if file else {}
-    await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none(), **extra)
+    content = {"file": file} if file else {"embed": embed}
+    await interaction.followup.send(allowed_mentions=discord.AllowedMentions.none(), **content)
 
 
 def _no_links(text: str) -> bool:
     return not re.search(r"https?://|discord\.gg/|www\.", text, re.I)
 
 
-@tree.command(name="editprofile", description="Decorate your profile: color, bio, favorite song or background picture")
-@app_commands.describe(setting="What to change",
-                       value="The new value (for color, bio or favorite). Use 'clear' to remove it",
-                       image="For background: the picture to use")
-async def edit_profile(interaction: discord.Interaction,
-                       setting: Literal["color", "bio", "favorite", "background", "reset"],
-                       value: str | None = None, image: discord.Attachment | None = None):
-    user_id = interaction.user.id
-    value = value.strip() if value else None
-    clearing = value is not None and value.lower() in ("clear", "none", "remove")
+COLOR_EMOJI = {"blurple": "💙", "red": "🟥", "orange": "🟧", "yellow": "🟨", "green": "🟩", "teal": "🩵",
+               "blue": "🟦", "purple": "🟪", "pink": "🩷", "white": "⬜", "black": "⬛"}
 
-    if setting == "reset":
-        storage.reset_style(user_id)
-        return await interaction.response.send_message("🧽 Your profile decorations and background were reset.",
-                                                       ephemeral=True)
 
-    if setting == "background":
-        if clearing:
-            storage.delete_background(user_id)
-            return await interaction.response.send_message("🖼️ Background removed.", ephemeral=True)
-        if not image:
-            return await interaction.response.send_message(
-                "Attach a picture: `/editprofile setting:background image:` and pick a file. "
-                "With the prefix, type `M.editprofile background` and attach the picture to the message.",
+def parse_color(text: str) -> int | None:
+    """'pink' or '#ff66aa' -> 0xff66aa"""
+    text = text.strip().lower()
+    if text in PROFILE_COLORS:
+        return PROFILE_COLORS[text]
+    match = re.fullmatch(r"#?([0-9a-f]{6})", text)
+    return int(match.group(1), 16) if match else None
+
+
+async def save_background_upload(user_id: int, image: discord.Attachment) -> str | None:
+    """Store an uploaded background. Returns an error message, or None when it worked."""
+    if image.size > card.MAX_BACKGROUND_BYTES or not (image.content_type or "").startswith("image/"):
+        return "Use a PNG, JPG, WebP or GIF picture up to 10 MB."
+    try:
+        jpeg = await asyncio.to_thread(card.prepare_background, await image.read())
+    except discord.HTTPException:
+        jpeg = None
+    if not jpeg:
+        return "I couldn't read that picture. Try a different PNG or JPG."
+    storage.save_background(user_id, jpeg)
+    return None
+
+
+class _TextModal(discord.ui.Modal):
+    """A one-box form for the bio, favorite song or a custom color."""
+
+    def __init__(self, editor: "ProfileEditor", title: str, label: str, current: str | None, max_length: int,
+                 placeholder: str, save):
+        super().__init__(title=title, timeout=300)
+        self.editor, self.save = editor, save
+        self.box = discord.ui.TextInput(
+            label=label, default=current, required=False, max_length=max_length, placeholder=placeholder,
+            style=discord.TextStyle.paragraph if max_length > 80 else discord.TextStyle.short)
+        self.add_item(self.box)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        error = self.save(self.box.value.strip())
+        await self.editor.refresh(interaction, error)
+
+
+class _BackgroundModal(discord.ui.Modal, title="Profile background"):
+    def __init__(self, editor: "ProfileEditor"):
+        super().__init__(timeout=300)
+        self.editor = editor
+        self.upload = discord.ui.FileUpload(required=True, max_values=1)
+        self.add_item(discord.ui.Label(text="Picture", description="PNG, JPG, WebP or GIF, up to 10 MB",
+                                       component=self.upload))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        error = await save_background_upload(self.editor.owner_id, self.upload.values[0])
+        await self.editor.refresh(interaction, error)
+
+
+class ProfileEditor(discord.ui.View):
+    """The /editprofile panel: a live preview of the card, with buttons and a color menu to change it."""
+
+    def __init__(self, owner: discord.Member, guild: discord.Guild):
+        super().__init__(timeout=600)
+        self.owner, self.owner_id, self.guild = owner, owner.id, guild
+        self.message: discord.Message | None = None
+        self._set_color_options()
+
+    def _set_color_options(self):
+        current = storage.get_style(self.owner_id).color
+        self.color_menu.options = [
+            discord.SelectOption(label=name.capitalize(), value=name, emoji=COLOR_EMOJI.get(name),
+                                 default=current == value)
+            for name, value in PROFILE_COLORS.items()
+        ] + [discord.SelectOption(label="Custom color…", value="custom", emoji="🎨",
+                                  description="Type a color code like #ff66aa")]
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                f"This editor belongs to **{self.owner.display_name}**. Open your own with `M.editprofile` 🙂",
                 ephemeral=True)
-        if image.size > card.MAX_BACKGROUND_BYTES or not (image.content_type or "").startswith("image/"):
-            return await interaction.response.send_message("Use a PNG, JPG, WebP or GIF picture up to 10 MB.",
-                                                           ephemeral=True)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            jpeg = await asyncio.to_thread(card.prepare_background, await image.read())
-        except discord.HTTPException:
-            jpeg = None
-        if not jpeg:
-            return await reply(interaction, "I couldn't read that picture. Try a different PNG or JPG.")
-        storage.save_background(user_id, jpeg)
-        return await reply(interaction, "🖼️ Background set! See it with `/profile`.")
+            return False
+        return True
 
-    if setting == "color":
-        if clearing:
-            storage.update_style(user_id, color=None)
-            return await interaction.response.send_message("🎨 Color reset to the default.", ephemeral=True)
-        hex_match = re.fullmatch(r"#?([0-9a-fA-F]{6})", value or "")
-        color = PROFILE_COLORS.get((value or "").lower()) or (int(hex_match.group(1), 16) if hex_match else None)
-        if color is None:
-            return await interaction.response.send_message(
-                f"Pick a color: {', '.join(PROFILE_COLORS)}, or a hex code like `#ff66aa`.", ephemeral=True)
-        storage.update_style(user_id, color=color)
-        return await interaction.response.send_message(f"🎨 Profile color set to **{value}**. See it with `/profile`.",
-                                                       ephemeral=True)
+    async def render(self) -> dict:
+        """The panel's message: a line of text, the preview picture, and these controls."""
+        embed, file = await build_profile(self.owner, self.guild)
+        return {"content": "✏️ **Edit your profile.** Pick what to change below. Changes are saved right away.",
+                "attachments": [file] if file else [], "embed": embed, "view": self}
 
-    if setting == "bio":
-        if not value or clearing:
-            storage.update_style(user_id, bio=None)
-            return await interaction.response.send_message("💬 Bio removed.", ephemeral=True)
-        if len(value) > 100:
-            return await interaction.response.send_message("Your bio can be at most 100 characters.", ephemeral=True)
-        if not _no_links(value):
-            return await interaction.response.send_message("Links aren't allowed in bios.", ephemeral=True)
-        storage.update_style(user_id, bio=discord.utils.escape_mentions(value))
-        return await interaction.response.send_message("💬 Bio saved. See it with `/profile`.", ephemeral=True)
+    async def refresh(self, interaction: discord.Interaction, error: str | None = None):
+        """Redraw the preview after a change, or say what went wrong."""
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        if error:
+            return await interaction.followup.send(error, ephemeral=True)
+        self._set_color_options()
+        await interaction.edit_original_response(**await self.render())
 
-    # favorite song: saved exactly as typed
-    if not value or clearing:
-        storage.update_style(user_id, favorite=None)
-        return await interaction.response.send_message("⭐ Favorite song removed.", ephemeral=True)
-    if len(value) > 80:
-        return await interaction.response.send_message("Keep it to 80 characters or less.", ephemeral=True)
-    if not _no_links(value):
-        return await interaction.response.send_message("Just type the song's name, without a link.", ephemeral=True)
-    storage.update_style(user_id, favorite=discord.utils.escape_mentions(value))
-    await interaction.response.send_message(f"⭐ Favorite song set to **{value}**.", ephemeral=True)
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(content="✅ Profile editor closed. Type `M.editprofile` to open it again.",
+                                        view=None)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.select(placeholder="🎨 Card color", row=0)
+    async def color_menu(self, interaction: discord.Interaction, select: discord.ui.Select):
+        choice = select.values[0]
+        if choice != "custom":
+            storage.update_style(self.owner_id, color=PROFILE_COLORS[choice])
+            return await self.refresh(interaction)
+
+        def save(text: str):
+            if not text:
+                storage.update_style(self.owner_id, color=None)
+                return None
+            color = parse_color(text)
+            if color is None:
+                return "That's not a color code. Use 6 characters like `#ff66aa`."
+            storage.update_style(self.owner_id, color=color)
+            return None
+
+        current = storage.get_style(self.owner_id).color
+        await interaction.response.send_modal(_TextModal(
+            self, "Custom color", "Color code (leave empty for the default)",
+            f"#{current:06x}" if current is not None else None, 7, "#ff66aa", save))
+
+    @discord.ui.button(label="Bio", emoji="💬", style=discord.ButtonStyle.primary, row=1)
+    async def bio(self, interaction: discord.Interaction, button: discord.ui.Button):
+        def save(text: str):
+            if text and not _no_links(text):
+                return "Links aren't allowed in bios."
+            storage.update_style(self.owner_id, bio=discord.utils.escape_mentions(text) or None)
+            return None
+
+        await interaction.response.send_modal(_TextModal(
+            self, "Your bio", "Bio (leave empty to remove it)", storage.get_style(self.owner_id).bio, 100,
+            "lofi all day 🌙", save))
+
+    @discord.ui.button(label="Favorite song", emoji="⭐", style=discord.ButtonStyle.primary, row=1)
+    async def favorite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        def save(text: str):
+            if text and not _no_links(text):
+                return "Just type the song's name, without a link."
+            storage.update_style(self.owner_id, favorite=discord.utils.escape_mentions(text) or None)
+            return None
+
+        await interaction.response.send_modal(_TextModal(
+            self, "Favorite song", "Favorite song (leave empty to remove it)",
+            storage.get_style(self.owner_id).favorite, 80, "Get Lucky - Daft Punk", save))
+
+    @discord.ui.button(label="Background", emoji="🖼️", style=discord.ButtonStyle.primary, row=1)
+    async def background(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(_BackgroundModal(self))
+
+    @discord.ui.button(label="Remove background", emoji="🗑️", style=discord.ButtonStyle.secondary, row=2)
+    async def remove_background(self, interaction: discord.Interaction, button: discord.ui.Button):
+        storage.delete_background(self.owner_id)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Reset everything", emoji="🧽", style=discord.ButtonStyle.danger, row=2)
+    async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
+        storage.reset_style(self.owner_id)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Done", emoji="✅", style=discord.ButtonStyle.success, row=2)
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="✅ Profile saved! Show it off with `M.profile`.", view=None)
 
 
-@edit_profile.autocomplete("value")
-async def edit_profile_value_autocomplete(interaction: discord.Interaction, current: str):
-    if getattr(interaction.namespace, "setting", None) != "color":
-        return []
-    return [app_commands.Choice(name=name, value=name) for name in PROFILE_COLORS if current.lower() in name][:25]
+@tree.command(name="editprofile", description="Open the profile editor: color, bio, favorite song, background")
+async def edit_profile(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    editor = ProfileEditor(interaction.user, interaction.guild)
+    panel = await editor.render()
+    files = panel.pop("attachments")
+    if panel["embed"] is None:
+        del panel["embed"]
+    if files:
+        panel["file"] = files[0]
+    editor.message = await interaction.followup.send(ephemeral=True, wait=True, **panel)
 
 
 @tree.command(description="Turn listening stats on or off for you (off also deletes your stats)")
@@ -1576,7 +1677,7 @@ HELP_SECTIONS = {
     ],
     "👤 You": [
         ("/profile", "Show your profile card: listening time, top songs and artists, streak, badges"),
-        ("/editprofile", "Decorate it: color, bio, favorite song, background picture"),
+        ("/editprofile", "Open the editor: color, bio, favorite song, background picture"),
         ("/grab", "Send the current song to your DMs"),
         ("/tracking", "Turn your listening stats on or off"),
     ],

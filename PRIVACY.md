@@ -20,8 +20,8 @@ Saved data is stored in a database file on the computer that runs the bot.
 | **Saved playlists:** your Discord user ID, each playlist's name and creation time, and its songs' titles, links and lengths | So `/playlist` can save and play your playlists | Until you delete them |
 | **Server settings:** the server's ID, volume, autoplay on/off, DJ role ID, 24/7 on/off, and the voice and text channel IDs used for 24/7 mode | So each server keeps its settings after a restart | Until the bot is removed from the server |
 | **Listening stats:** your user ID; how long you listened per server and per day; the songs you heard (title, link, guessed artist, play count, time); and how long you listened together with each other person in the same server | For `/profile` and the `/top` leaderboard | Until you use `/tracking off` or `/deletemydata` |
-| **Profile decorations:** your user ID, and the color, bio and favorite song you choose with `/editprofile` | To decorate your `/profile` | Until you change them, use `/editprofile reset`, or `/deletemydata` |
-| **Profile background:** a copy of the picture you upload with `/editprofile background`, shrunk to the card's size. The original file isn't kept | To draw it behind your `/profile` card | Until you remove it (`/editprofile background clear`), use `/editprofile reset`, or `/deletemydata` |
+| **Profile decorations:** your user ID, and the color, bio and favorite song you choose in the `/editprofile` editor | To decorate your `/profile` | Until you change them, press **Reset everything** in the editor, or use `/deletemydata` |
+| **Profile background:** a copy of the picture you upload in the `/editprofile` editor, shrunk to the card's size. The original file isn't kept | To draw it behind your `/profile` card | Until you press **Remove background** or **Reset everything** in the editor, or use `/deletemydata` |
 | **Play history:** for each song played in a server: the server's ID, the song's title, link and artist, when it played, and the user ID of who added it | For `/history`, `/top` and your "songs requested" count | 60 days |
 
 ### How listening stats work
