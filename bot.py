@@ -1454,13 +1454,17 @@ class _BackgroundModal(discord.ui.Modal, title="Profile background"):
     def __init__(self, editor: "ProfileEditor"):
         super().__init__(timeout=300)
         self.editor = editor
-        self.upload = discord.ui.FileUpload(required=True, max_values=1)
-        self.add_item(discord.ui.Label(text="Picture",
-                                       description="Musica accepts PNG, JPG, WebP or GIF pictures up to 10 MB",
-                                       component=self.upload))
+        self.upload = discord.ui.FileUpload(required=False, max_values=1)
+        self.add_item(discord.ui.Label(
+            text="Picture",
+            description="Musica takes PNG, JPG, WebP or GIF up to 10 MB. Submit with no picture to remove yours.",
+            component=self.upload))
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if not self.upload.values:  # submitted empty: remove the current background
+            storage.delete_background(self.editor.owner_id)
+            return await self.editor.refresh(interaction)
         error = await save_background_upload(self.editor.owner_id, self.upload.values[0])
         await self.editor.refresh(interaction, error)
 
@@ -1544,14 +1548,9 @@ class ProfileEditor(discord.ui.View):
             self, "Favorite song", "Favorite song (leave empty to remove it)",
             storage.get_style(self.owner_id).favorite, 80, "Get Lucky - Daft Punk", save))
 
-    @discord.ui.button(label="Background", emoji="🖼️", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Background", emoji="🖼️", style=discord.ButtonStyle.primary, row=1)
     async def background(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(_BackgroundModal(self))
-
-    @discord.ui.button(label="Remove BG", emoji="🗑️", style=discord.ButtonStyle.secondary, row=1)
-    async def remove_background(self, interaction: discord.Interaction, button: discord.ui.Button):
-        storage.delete_background(self.owner_id)
-        await self.refresh(interaction)
 
     @discord.ui.button(label="Reset", emoji="🧽", style=discord.ButtonStyle.danger, row=1)
     async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
