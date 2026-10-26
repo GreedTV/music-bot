@@ -1,6 +1,6 @@
 # Musica Privacy Policy
 
-**Effective date:** October 26, 2026 (updated to cover `M.` prefix commands)
+**Effective date:** October 26, 2026 (updated to cover `M.` prefix commands and listening stats)
 
 This policy explains what the Musica Discord bot ("Musica", "the bot"), run by GreedTV ("we", "us"), collects,
 why, and how you can delete it. We keep as little as possible.
@@ -19,6 +19,19 @@ Saved data is stored in a database file on the computer that runs the bot.
 |---|---|---|
 | **Saved playlists:** your Discord user ID, each playlist's name and creation time, and its songs' titles, links and lengths | So `/playlist` can save and play your playlists | Until you delete them |
 | **Server settings:** the server's ID, volume, autoplay on/off, DJ role ID, 24/7 on/off, and the voice and text channel IDs used for 24/7 mode | So each server keeps its settings after a restart | Until the bot is removed from the server |
+| **Listening stats:** your user ID; how long you listened per server and per day; the songs you heard (title, link, guessed artist, play count, time); and how long you listened together with each other person in the same server | For `/profile` and the `/top` leaderboard | Until you use `/tracking off` or `/deletemydata` |
+| **Play history:** for each song played in a server: the server's ID, the song's title, link and artist, when it played, and the user ID of who added it | For `/history`, `/top` and your "songs requested" count | 60 days |
+
+### How listening stats work
+- While music plays, the bot checks every 15 seconds who is in its voice channel. Deafened people aren't counted.
+  The bot never hears anyone. It only sees who is in the channel, which Discord shows to everyone there.
+- **Your profile is private.** `/profile` is only shown to you, and `M.profile` is sent to your DMs. Others only
+  see it if you choose to share it (`/profile share:True` or `M.profile share`).
+- "Listened with" only counts and shows people from the same server.
+- `/top` shows each server's most played songs and biggest listeners from the last 7 days to everyone in that
+  server. People with tracking off aren't counted or shown.
+- `/tracking off` stops tracking you and deletes your stats right away, including from other people's
+  "listened with" lists. `/tracking on` starts again from zero.
 
 ## What Musica keeps only temporarily
 These are kept in memory while the bot runs, and are gone when it restarts or leaves the voice channel:
@@ -42,7 +55,9 @@ Song thumbnails in the player card are loaded from YouTube's image servers (i.yt
 
 ## Deleting your data
 - `/playlist delete` deletes one playlist.
-- `/deletemydata` deletes all your saved playlists. That's everything Musica stores about you.
+- `/tracking off` deletes your listening stats and stops new ones from being collected.
+- `/deletemydata` deletes all your saved playlists and listening stats, and removes your user ID from the play
+  history. That's everything Musica stores about you.
 - A server's settings are deleted when Musica is removed from that server.
 - For anything else, open an issue at <https://github.com/GreedTV/music-bot/issues>.
 

@@ -73,8 +73,10 @@ AUTOPLAY = "Autoplay"
 
 class Track:
     def __init__(self, title: str, url: str, requester: str, requester_id: int | None = None,
-                 youtube_id: str | None = None, stream_url: str | None = None, duration: float | None = None):
+                 youtube_id: str | None = None, stream_url: str | None = None, duration: float | None = None,
+                 uploader: str | None = None):
         self.title = title
+        self.uploader = uploader  # YouTube channel name, used to guess the artist
         self.url = url  # page URL, used to (re)resolve the audio stream
         self.requester = requester
         self.requester_id = requester_id
@@ -89,6 +91,20 @@ class Track:
 
     def to_saved(self) -> storage.SavedTrack:
         return storage.SavedTrack(self.title, self.url, self.youtube_id, self.duration)
+
+    @property
+    def artist(self) -> str | None:
+        """'Daft Punk - Get Lucky' -> 'Daft Punk'; otherwise the channel name without ' - Topic' / 'VEVO'."""
+        cleaned = clean_title(self.title)
+        if " - " in cleaned:
+            return cleaned.split(" - ", 1)[0].strip() or None
+        if self.uploader:
+            name = re.sub(r"\s*-\s*Topic$|VEVO$|\s+Official$", "", self.uploader, flags=re.I).strip()
+            return name or None
+        return None
+
+    def song_info(self) -> storage.SongInfo:
+        return storage.SongInfo(self.youtube_id or self.url, self.title, self.artist, self.url)
 
 
 def format_duration(seconds: float | None) -> str:
@@ -133,6 +149,8 @@ class GuildPlayer:
         self.elapsed_base = 0.0
         self.resumed_at: float | None = None  # None while paused
         self.lock = asyncio.Lock()
+        self.listened: dict[int, float] = {}  # seconds each person has heard of the current song (for stats)
+        self.last_stats_tick: float | None = None
 
     @property
     def volume(self) -> float:
@@ -205,7 +223,8 @@ def _entry_to_track(entry: dict, requester: str, requester_id: int | None) -> Tr
     yt_id = _youtube_id(entry)
     if yt_id and not str(url).startswith("http"):
         url = f"https://www.youtube.com/watch?v={yt_id}"
-    return Track(entry.get("title") or url, url, requester, requester_id, yt_id, duration=entry.get("duration"))
+    return Track(entry.get("title") or url, url, requester, requester_id, yt_id, duration=entry.get("duration"),
+                 uploader=entry.get("channel") or entry.get("uploader"))
 
 
 async def fetch_tracks(query: str, requester: str, requester_id: int | None = None) -> tuple[list[Track], str | None]:
@@ -223,7 +242,7 @@ async def fetch_tracks(query: str, requester: str, requester_id: int | None = No
             return [_entry_to_track(entries[0], requester, requester_id)], None
         return [_entry_to_track(e, requester, requester_id) for e in entries], info.get("title") or "playlist"
     track = Track(info["title"], info.get("webpage_url", query), requester, requester_id, _youtube_id(info),
-                  info.get("url"), info.get("duration"))
+                  info.get("url"), info.get("duration"), info.get("artist") or info.get("channel") or info.get("uploader"))
     return [track], None
 
 
@@ -239,6 +258,7 @@ async def resolve_stream(track: Track) -> str:
     track.stream_url, track.resolved_at = info["url"], time.time()
     track.youtube_id = track.youtube_id or _youtube_id(info)
     track.duration = track.duration or info.get("duration")
+    track.uploader = track.uploader or info.get("artist") or info.get("channel") or info.get("uploader")
     return track.stream_url
 
 
@@ -349,8 +369,14 @@ async def start_track(guild: discord.Guild, player: GuildPlayer, track: Track, p
     if not vc or not vc.is_connected():
         return False
     player.current = track
-    if position == 0 and track.youtube_id:
-        player.history.append(track.youtube_id)
+    if position == 0:
+        if track.youtube_id:
+            player.history.append(track.youtube_id)
+        player.listened = {}
+        try:
+            storage.record_play(guild.id, track.song_info(), track.requester_id)
+        except Exception:
+            log.exception("Could not record play")
     vc.play(make_source(stream, position, player), after=lambda err: _after_playback(guild, err))
     player.mark_playing(position)
     return True
@@ -1207,6 +1233,123 @@ async def stay_247(interaction: discord.Interaction, mode: Literal["on", "off"])
     await interaction.followup.send(f"📻 24/7 mode is on. I'll stay in {channel.mention}, and rejoin it after a restart.")
 
 
+# ---- commands: profile and stats ----
+
+def format_listen_time(seconds: float) -> str:
+    hours, minutes = divmod(int(seconds // 60), 60)
+    return f"{hours}h {minutes}m" if hours else f"{minutes}m"
+
+
+def _song_link(title: str, url: str | None) -> str:
+    title = title.replace("[", "(").replace("]", ")")[:60]
+    return f"[{title}]({url})" if url and url.startswith("http") else title
+
+
+def profile_embed(member: discord.Member, guild: discord.Guild, p: storage.Profile, shared: bool) -> discord.Embed:
+    embed = discord.Embed(title=f"🎧 {member.display_name}'s music profile", color=0x5865F2)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    if not p.total_seconds and not p.songs_requested:
+        embed.description = "No listening yet. Listen to music with Musica in a voice channel and your stats show up here."
+    embed.add_field(name="Listening time", value=format_listen_time(p.total_seconds))
+    embed.add_field(name="Songs", value=f"{p.songs_heard} heard · {p.songs_requested} requested")
+    embed.add_field(name="Streak", value=f"🔥 {p.streak} day{'s' if p.streak != 1 else ''} · best {p.best_streak}")
+    if p.top_songs:
+        embed.add_field(name="Top songs", inline=False, value="\n".join(
+            f"`{i}.` {_song_link(title, url)} · {plays}×" for i, (title, url, plays) in enumerate(p.top_songs, 1)))
+    if p.top_artists:
+        embed.add_field(name="Top artists", inline=False, value="\n".join(
+            f"`{i}.` {artist} · {plays}×" for i, (artist, plays) in enumerate(p.top_artists, 1)))
+    if p.listened_with:
+        embed.add_field(name=f"Listened with most in {guild.name}"[:256], inline=False, value="\n".join(
+            f"`{i}.` <@{uid}> · {format_listen_time(s)}" for i, (uid, s) in enumerate(p.listened_with, 1)))
+    if p.top_servers:
+        names = []
+        for gid, s in p.top_servers:
+            g = client.get_guild(gid)
+            names.append(f"{g.name if g else 'A server I left'} · {format_listen_time(s)}")
+        embed.add_field(name="Top servers", inline=False,
+                        value="\n".join(f"`{i}.` {n}" for i, n in enumerate(names, 1)))
+    embed.set_footer(text=f"Shared by {member.display_name}" if shared else
+                     "Only you can see this · /profile share:True shows it to everyone · /tracking off stops tracking")
+    return embed
+
+
+@tree.command(description="Your music profile: listening time, top songs, who you listen with. Only you see it")
+@app_commands.describe(share="Post it in the channel so everyone can see it")
+async def profile(interaction: discord.Interaction, share: bool = False):
+    member = interaction.user
+    if not storage.is_tracking(member.id):
+        return await interaction.response.send_message(
+            "Tracking is off for you, so there's no profile. Turn it on with `/tracking on`.", ephemeral=True)
+    embed = profile_embed(member, interaction.guild, storage.get_profile(member.id, interaction.guild.id), share)
+    if share:
+        return await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    if isinstance(interaction, PrefixInteraction):  # a chat reply can't be private, so use DMs
+        try:
+            await member.send(embed=embed)
+        except discord.HTTPException:
+            return await interaction.response.send_message(
+                "I can't DM you. Use `/profile` (only you see it), or `M.profile share` to post it here.", ephemeral=True)
+        return await interaction.response.send_message(
+            "📬 I sent your profile to your DMs. Use `M.profile share` to show it here.", ephemeral=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(description="Turn listening stats on or off for you (off also deletes your stats)")
+async def tracking(interaction: discord.Interaction, mode: Literal["on", "off"]):
+    storage.set_tracking(interaction.user.id, mode == "on")
+    await interaction.response.send_message(
+        "📊 Tracking is on. Your listening stats will show up in `/profile`." if mode == "on" else
+        "📊 Tracking is off, and your listening stats were deleted. Your playlists are kept.", ephemeral=True)
+
+
+@tree.command(description="This server's most played songs and biggest listeners in the last 7 days")
+async def top(interaction: discord.Interaction):
+    songs, people = storage.server_top(interaction.guild.id)
+    if not songs and not people:
+        return await interaction.response.send_message("No music was played here in the last 7 days.", ephemeral=True)
+    embed = discord.Embed(title=f"🏆 Top in {interaction.guild.name} · last 7 days"[:256], color=0xFAA61A)
+    if songs:
+        embed.add_field(name="Most played", inline=False, value="\n".join(
+            f"`{i}.` {_song_link(title, url)} · {n} play{'s' if n != 1 else ''}"
+            for i, (title, url, n) in enumerate(songs, 1)))
+    if people:
+        embed.add_field(name="Biggest listeners", inline=False, value="\n".join(
+            f"`{i}.` <@{uid}> · {format_listen_time(s)}" for i, (uid, s) in enumerate(people, 1)))
+    await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+
+@tree.command(description="The last 20 songs played in this server")
+async def history(interaction: discord.Interaction):
+    rows = storage.recent_plays(interaction.guild.id)
+    if not rows:
+        return await interaction.response.send_message("Nothing has been played here yet.", ephemeral=True)
+    lines = [f"<t:{played_at}:R> {_song_link(title, url)}" + (f" · <@{req}>" if req else "")
+             for title, url, req, played_at in rows]
+    embed = discord.Embed(title="🕘 Recently played", description="\n".join(lines)[:4096], color=0x5865F2)
+    await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+
+@tree.command(description="Send the current song to your DMs so you can find it later")
+async def grab(interaction: discord.Interaction):
+    player = players.get(interaction.guild.id)
+    if not player or not player.current:
+        return await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+    track = player.current
+    embed = discord.Embed(title=track.title[:256], url=track.url if str(track.url).startswith("http") else None,
+                          color=0x5865F2)
+    embed.set_author(name="🎵 Saved from Musica")
+    embed.add_field(name="Length", value=format_duration(track.duration))
+    embed.add_field(name="Heard in", value=interaction.guild.name)
+    if track.thumbnail:
+        embed.set_thumbnail(url=track.thumbnail)
+    try:
+        await interaction.user.send(embed=embed)
+    except discord.HTTPException:
+        return await interaction.response.send_message(f"I can't DM you, so here it is: {track.url}", ephemeral=True)
+    await interaction.response.send_message(f"📬 Sent **{track.title}** to your DMs.", ephemeral=True)
+
+
 # ---- commands: help and privacy ----
 
 HELP_SECTIONS = {
@@ -1227,6 +1370,15 @@ HELP_SECTIONS = {
         ("/shuffle · /clear", "Shuffle or empty the queue"),
         ("/loop", "Repeat the song or the whole queue"),
         ("/autoplay", "Keep playing similar songs when the queue ends"),
+    ],
+    "👤 You": [
+        ("/profile", "Your stats: listening time, top songs and artists, streak, who you listen with"),
+        ("/grab", "Send the current song to your DMs"),
+        ("/tracking", "Turn your listening stats on or off"),
+    ],
+    "🏆 This server": [
+        ("/top", "Most played songs and biggest listeners this week"),
+        ("/history", "The last 20 songs played here"),
     ],
     "💾 Your playlists": [
         ("/playlist save · add", "Save the queue, or add the current song"),
@@ -1252,7 +1404,7 @@ async def help_command(interaction: discord.Interaction):
                                       f"`{PREFIX}np` now playing · `{PREFIX}back` previous · `{PREFIX}vol` volume · "
                                       f"`{PREFIX}l` loop · `{PREFIX}ap` autoplay · `{PREFIX}ly` lyrics · `{PREFIX}f` filter · "
                                       f"`{PREFIX}sh` shuffle · `{PREFIX}rm` remove · `{PREFIX}pl` playlist · "
-                                      f"`{PREFIX}dc` stop · `{PREFIX}h` help")
+                                      f"`{PREFIX}dc` stop · `{PREFIX}me` profile · `{PREFIX}g` grab · `{PREFIX}h` help")
     for section, commands in HELP_SECTIONS.items():
         embed.add_field(name=section, value="\n".join(f"`{c}` {d}" for c, d in commands), inline=False)
     embed.add_field(name="Links", value=f"[Terms of Service]({TERMS_URL}) · [Privacy Policy]({PRIVACY_URL}) · "
@@ -1275,7 +1427,8 @@ class ConfirmDelete(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         count = storage.delete_user_data(self.user_id)
         await interaction.response.edit_message(
-            content=f"🗑️ Done. Deleted {count} saved playlist(s). Nothing else about you is stored.", view=None)
+            content=f"🗑️ Done. Deleted {count} saved playlist(s) and your listening stats. "
+                    "Nothing else about you is stored.", view=None)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1286,8 +1439,8 @@ class ConfirmDelete(discord.ui.View):
 async def delete_my_data(interaction: discord.Interaction):
     names = storage.list_playlists(interaction.user.id)
     await interaction.response.send_message(
-        f"This deletes your {len(names)} saved playlist(s). That's the only data the bot keeps about you "
-        f"([Privacy Policy]({PRIVACY_URL})). This can't be undone.",
+        f"This deletes your {len(names)} saved playlist(s) and your listening stats. That's all the data the bot "
+        f"keeps about you ([Privacy Policy]({PRIVACY_URL})). This can't be undone.",
         view=ConfirmDelete(interaction.user.id), ephemeral=True)
 
 
@@ -1298,6 +1451,7 @@ PREFIX_ALIASES = {
     "p": "play", "s": "skip", "next": "skip", "back": "previous", "prev": "previous", "np": "nowplaying",
     "q": "queue", "vol": "volume", "v": "volume", "l": "loop", "ap": "autoplay", "ly": "lyrics", "f": "filter",
     "leave": "stop", "dc": "stop", "rm": "remove", "sh": "shuffle", "pl": "playlist", "h": "help", "247": "24-7",
+    "pf": "profile", "me": "profile", "g": "grab", "hist": "history",
 }
 
 
@@ -1368,6 +1522,12 @@ def _convert_prefix_arg(guild: discord.Guild, cmd: app_commands.Command, p: app_
                 wants_choice = getattr(cmd.callback.__annotations__.get(p.name), "__origin__", None) is app_commands.Choice
                 return choice if wants_choice else choice.value
         raise ValueError(f"`{p.display_name}` must be one of: {', '.join(str(c.value) for c in p.choices)}.")
+    if p.type is discord.AppCommandOptionType.boolean:
+        if token.lower() in ("true", "yes", "on", "1", p.name.lower()):  # "M.profile share" means share=True
+            return True
+        if token.lower() in ("false", "no", "off", "0"):
+            return False
+        raise ValueError(f"`{p.display_name}` must be yes or no.")
     if p.type is discord.AppCommandOptionType.integer:
         try:
             value = int(token)
@@ -1495,6 +1655,39 @@ async def update_progress():
                 pass
 
 
+def active_listeners(vc: discord.VoiceClient) -> list[int]:
+    """People in the channel who can hear the music: not bots, not deafened."""
+    return [m.id for m in vc.channel.members
+            if not m.bot and not (m.voice and (m.voice.self_deaf or m.voice.deaf))]
+
+
+@tasks.loop(seconds=15)
+async def track_listening():
+    """Add listening time for everyone hearing the music (skipped for people who turned tracking off)."""
+    now = time.monotonic()
+    for guild_id, player in list(players.items()):
+        guild = client.get_guild(guild_id)
+        vc = guild.voice_client if guild else None
+        if not (vc and vc.is_playing() and player.current):
+            player.last_stats_tick = None
+            continue
+        last, player.last_stats_tick = player.last_stats_tick, now
+        if last is None:
+            continue
+        seconds = min(now - last, 30.0)
+        users = active_listeners(vc)
+        newly_heard = set()
+        for user_id in users:
+            before = player.listened.get(user_id, 0.0)
+            player.listened[user_id] = before + seconds
+            if before < storage.HEARD_AFTER_SECONDS <= before + seconds:
+                newly_heard.add(user_id)
+        try:
+            storage.record_listening(guild_id, player.current.song_info(), users, seconds, newly_heard)
+        except Exception:
+            log.exception("Could not record listening stats")
+
+
 ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
 
 
@@ -1550,6 +1743,9 @@ async def on_ready():
         keep_awake_while_playing.start()
     if not update_progress.is_running():
         update_progress.start()
+    if not track_listening.is_running():
+        track_listening.start()
+    storage.prune_old_plays()
     client.add_view(PlayerControls())  # makes buttons on existing cards work again after a restart
     log.info("Logged in as %s.", client.user)
     await sync_commands_if_changed()

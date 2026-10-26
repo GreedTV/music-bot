@@ -38,6 +38,11 @@ Only people in the bot's voice channel can use them. `/nowplaying` brings the ca
 | `/loop off\|song\|queue` | Repeats the current song or the whole queue |
 | `/autoplay on\|off` | Keep playing similar songs when the queue ends (remembered per server) |
 | `/playlist save\|add\|play\|show\|list\|delete` | Your own saved playlists, usable in any server |
+| `/profile [share]` | Your stats: listening time, songs heard/requested, top songs and artists, streak, who you listen with, top servers. Only you see it unless you share it (`M.profile` goes to your DMs) |
+| `/tracking on\|off` | Turn your listening stats on or off (off deletes them) |
+| `/top` | This server's most played songs and biggest listeners in the last 7 days |
+| `/history` | The last 20 songs played in this server |
+| `/grab` | Sends the current song to your DMs |
 | `/dj set\|clear` | Sets the DJ role (server managers) |
 | `/24-7 on\|off` | Stays in the voice channel even when it's empty, and rejoins after a restart (server managers) |
 | `/help` | Lists all commands |
@@ -57,11 +62,14 @@ Every command also works with the `M.` prefix (any case), with the same options 
 | `M.vol` / `M.v` | volume | | `M.rm` | remove |
 | `M.dc` / `M.leave` | stop | | `M.pl` | playlist |
 | `M.247` | 24-7 | | `M.h` | help |
+| `M.pf` / `M.me` | profile | | `M.g` | grab |
+| `M.hist` | history | | | |
 
 The bot's status shows **Type /help or M.help**.
 
 Without 24/7 mode, the bot leaves a minute after everyone else has left the voice channel.
-Saved playlists and server settings are stored in `data/musicbot.db` (SQLite).
+Saved playlists, server settings and listening stats are stored in `data/musicbot.db` (SQLite).
+Listening is counted every 15 seconds for everyone in the bot's voice channel who isn't deafened.
 
 ## Setup
 1. Go to https://discord.com/developers/applications → **New Application**.
