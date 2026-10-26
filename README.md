@@ -8,7 +8,8 @@ going with similar songs and similar artists, using YouTube's Mix for the last s
 
 ## Player card
 Each song posts a **Now playing** card with a progress bar, who asked for it and what's up next, plus buttons:
-⏮️ Back · ⏸️ Pause/Resume · ⏭️ Skip · ⏹️ Stop · 🔁 Loop (off → song → queue) · 🔀 Shuffle · 📜 Queue · 🎤 Lyrics.
+⏮️ Back · ⏸️ Pause/Resume · ⏭️ Skip · ⏹️ Stop · 🔁 Loop (off → song → queue) · 🔀 Shuffle · 📻 Autoplay ·
+📜 Queue · 🎤 Lyrics.
 Only people in the bot's voice channel can use them. `/nowplaying` brings the card back to the bottom of the chat.
 
 ## Who controls the music
@@ -42,12 +43,31 @@ Only people in the bot's voice channel can use them. `/nowplaying` brings the ca
 | `/help` | Lists all commands |
 | `/deletemydata` | Deletes everything the bot saved about you |
 
+### Prefix commands
+Every command also works with the `M.` prefix (any case), with the same options in order:
+`M.play daft punk`, `M.move 3 1`, `M.loop song`, `M.playlist save chill`, `M.dj set @DJ`.
+
+| Short | Command | | Short | Command |
+|---|---|---|---|---|
+| `M.p` | play | | `M.l` | loop |
+| `M.s` / `M.next` | skip | | `M.ap` | autoplay |
+| `M.back` / `M.prev` | previous | | `M.ly` | lyrics |
+| `M.np` | nowplaying | | `M.f` | filter |
+| `M.q` | queue | | `M.sh` | shuffle |
+| `M.vol` / `M.v` | volume | | `M.rm` | remove |
+| `M.dc` / `M.leave` | stop | | `M.pl` | playlist |
+| `M.247` | 24-7 | | `M.h` | help |
+
+The bot's status shows **Listening to M.help · /play**.
+
 Without 24/7 mode, the bot leaves a minute after everyone else has left the voice channel.
 Saved playlists and server settings are stored in `data/musicbot.db` (SQLite).
 
 ## Setup
 1. Go to https://discord.com/developers/applications → **New Application**.
 2. **Bot** tab → **Reset Token** → copy it. Keep **Public Bot** on and **Requires OAuth2 Code Grant** off.
+   Under **Privileged Gateway Intents**, turn on **Message Content Intent** (needed for `M.` commands; the bot
+   won't connect without it).
 3. Copy `.env.example` to `.env` and paste the token: `DISCORD_TOKEN=...`
 4. **Installation** tab: untick **User Install**. Under **Guild Install**, add scopes `applications.commands` and
    `bot`, and permissions `View Channels`, `Send Messages`, `Embed Links`, `Connect`, `Speak`.

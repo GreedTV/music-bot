@@ -1,13 +1,14 @@
 # Musica Privacy Policy
 
-**Effective date:** October 26, 2026
+**Effective date:** October 26, 2026 (updated to cover `M.` prefix commands)
 
 This policy explains what the Musica Discord bot ("Musica", "the bot"), run by GreedTV ("we", "us"), collects,
 why, and how you can delete it. We keep as little as possible.
 
 ## What Musica does *not* collect
-- **Your messages.** Musica only receives the slash commands you use and the buttons you press. It can't read
-  normal chat messages.
+- **Your messages.** To support `M.` commands (like `M.play`), Discord delivers messages from channels Musica can
+  see to the bot. Musica ignores every message that doesn't start with `M.` followed by one of its commands, and it
+  never saves or logs message text. Slash commands and button presses work the same way as before.
 - **Your voice.** Musica joins voice channels deafened. It doesn't listen to, record or receive anyone's audio.
 - **Payment or contact details.** Musica is free and never asks for them.
 

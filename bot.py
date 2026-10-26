@@ -180,7 +180,9 @@ class MusicTree(app_commands.CommandTree):
 
 
 intents = discord.Intents.default()
-client = discord.Client(intents=intents)
+intents.message_content = True  # for M. prefix commands; must also be switched on in the Developer Portal
+client = discord.Client(intents=intents,
+                        activity=discord.Activity(type=discord.ActivityType.listening, name="M.help · /play"))
 tree = MusicTree(client)
 players: dict[int, GuildPlayer] = {}
 http_session: aiohttp.ClientSession | None = None
@@ -563,6 +565,9 @@ class PlayerControls(discord.ui.View):
         if player and player.loop != "off":
             self.loop_mode.label = f"Loop: {player.loop}"
             self.loop_mode.style = discord.ButtonStyle.success
+        if player and player.autoplay:
+            self.autoplay_mode.label = "Autoplay: on"
+            self.autoplay_mode.style = discord.ButtonStyle.success
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         vc = interaction.guild.voice_client
@@ -624,6 +629,14 @@ class PlayerControls(discord.ui.View):
             return await interaction.response.send_message("Not enough songs in the queue to shuffle.", ephemeral=True)
         await self._redraw(interaction)
         await interaction.followup.send(f"🔀 **{interaction.user.display_name}** shuffled the queue.")
+
+    @discord.ui.button(label="Autoplay: off", emoji="📻", style=discord.ButtonStyle.secondary,
+                       custom_id="musicbot:autoplay", row=1)
+    async def autoplay_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = await guard(interaction, dj=True)
+        if player:
+            player.autoplay = not player.autoplay
+            await self._redraw(interaction)
 
     @discord.ui.button(label="Queue", emoji="📜", style=discord.ButtonStyle.secondary, custom_id="musicbot:queue", row=1)
     async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1234,7 +1247,13 @@ HELP_SECTIONS = {
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(title="🎵 Musica commands", color=0x5865F2,
                           description="Join a voice channel and use `/play`. The player card has buttons for "
-                                      "pause, skip, back, loop, shuffle, queue and lyrics.")
+                                      "back, pause, skip, stop, loop, shuffle, autoplay, queue and lyrics.\n\n"
+                                      f"Every command also works with the **`{PREFIX}`** prefix, like `{PREFIX}play`. "
+                                      f"Short versions: `{PREFIX}p` play · `{PREFIX}s` skip · `{PREFIX}q` queue · "
+                                      f"`{PREFIX}np` now playing · `{PREFIX}back` previous · `{PREFIX}vol` volume · "
+                                      f"`{PREFIX}l` loop · `{PREFIX}ap` autoplay · `{PREFIX}ly` lyrics · `{PREFIX}f` filter · "
+                                      f"`{PREFIX}sh` shuffle · `{PREFIX}rm` remove · `{PREFIX}pl` playlist · "
+                                      f"`{PREFIX}dc` stop · `{PREFIX}h` help")
     for section, commands in HELP_SECTIONS.items():
         embed.add_field(name=section, value="\n".join(f"`{c}` {d}" for c, d in commands), inline=False)
     embed.add_field(name="Links", value=f"[Terms of Service]({TERMS_URL}) · [Privacy Policy]({PRIVACY_URL}) · "
@@ -1246,6 +1265,12 @@ class ConfirmDelete(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
         self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:  # with M.deletemydata the buttons are visible to everyone
+            await interaction.response.send_message("These buttons are for someone else.", ephemeral=True)
+            return False
+        return True
 
     @discord.ui.button(label="Yes, delete my data", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1265,6 +1290,157 @@ async def delete_my_data(interaction: discord.Interaction):
         f"This deletes your {len(names)} saved playlist(s). That's the only data the bot keeps about you "
         f"([Privacy Policy]({PRIVACY_URL})). This can't be undone.",
         view=ConfirmDelete(interaction.user.id), ephemeral=True)
+
+
+# ---- prefix commands: M.play, M.p, M.skip, ... ----
+
+PREFIX = "M."
+PREFIX_ALIASES = {
+    "p": "play", "s": "skip", "next": "skip", "back": "previous", "prev": "previous", "np": "nowplaying",
+    "q": "queue", "vol": "volume", "v": "volume", "l": "loop", "ap": "autoplay", "ly": "lyrics", "f": "filter",
+    "leave": "stop", "dc": "stop", "rm": "remove", "sh": "shuffle", "pl": "playlist", "h": "help", "247": "24-7",
+}
+
+
+class PrefixInteraction:
+    """Lets a prefix command run the slash command code: replies go to the channel instead of the interaction."""
+
+    def __init__(self, message: discord.Message, command: app_commands.Command):
+        self.message = message
+        self.user = message.author
+        self.guild = message.guild
+        self.channel = message.channel
+        self.command = command
+        self.response = _PrefixResponse(self)
+        self.followup = _PrefixFollowup(self)
+        self._last: discord.Message | None = None
+
+    async def _send(self, content=None, *, embed=None, view=None, ephemeral=False, allowed_mentions=None, **_):
+        kwargs = {"content": content, "embed": embed, "mention_author": False,
+                  "allowed_mentions": allowed_mentions or discord.AllowedMentions.none()}
+        if view is not None:
+            kwargs["view"] = view
+        elif ephemeral and embed is None:
+            kwargs["delete_after"] = 30  # stand-in for "only you can see this": tidy it up later
+        self._last = await self.message.reply(**kwargs)
+        return self._last
+
+    async def original_response(self) -> discord.Message | None:
+        return self._last
+
+
+class _PrefixResponse:
+    def __init__(self, interaction: PrefixInteraction):
+        self._interaction = interaction
+        self._done = False
+
+    def is_done(self) -> bool:
+        return self._done
+
+    async def send_message(self, content=None, **kwargs):
+        self._done = True
+        return await self._interaction._send(content, **kwargs)
+
+    async def defer(self, **_):
+        self._done = True
+        try:
+            await self._interaction.channel.typing()
+        except discord.HTTPException:
+            pass
+
+
+class _PrefixFollowup:
+    def __init__(self, interaction: PrefixInteraction):
+        self._interaction = interaction
+
+    async def send(self, content=None, **kwargs):
+        return await self._interaction._send(content, **kwargs)
+
+
+def prefix_usage(cmd: app_commands.Command) -> str:
+    args = " ".join(f"<{p.display_name}>" if p.required else f"[{p.display_name}]" for p in cmd.parameters)
+    return f"{PREFIX}{cmd.qualified_name} {args}".strip()
+
+
+def _convert_prefix_arg(guild: discord.Guild, cmd: app_commands.Command, p: app_commands.Parameter, token: str):
+    if p.choices:
+        for choice in p.choices:
+            if token.lower() in (choice.name.lower(), str(choice.value).lower()):
+                wants_choice = getattr(cmd.callback.__annotations__.get(p.name), "__origin__", None) is app_commands.Choice
+                return choice if wants_choice else choice.value
+        raise ValueError(f"`{p.display_name}` must be one of: {', '.join(str(c.value) for c in p.choices)}.")
+    if p.type is discord.AppCommandOptionType.integer:
+        try:
+            value = int(token)
+        except ValueError:
+            raise ValueError(f"`{p.display_name}` must be a number.") from None
+        if (p.min_value is not None and value < p.min_value) or (p.max_value is not None and value > p.max_value):
+            raise ValueError(f"`{p.display_name}` must be between {p.min_value} and {p.max_value if p.max_value is not None else '∞'}.")
+        return value
+    if p.type is discord.AppCommandOptionType.role:
+        role_id = token.strip("<@&>")
+        role = guild.get_role(int(role_id)) if role_id.isdigit() else \
+            discord.utils.find(lambda r: r.name.lower() == token.lstrip("@").lower(), guild.roles)
+        if not role:
+            raise ValueError(f"I couldn't find the role `{token}`.")
+        return role
+    if p.max_value is not None and len(token) > p.max_value:
+        raise ValueError(f"`{p.display_name}` can be at most {p.max_value} characters.")
+    return token
+
+
+def parse_prefix_args(guild: discord.Guild, cmd: app_commands.Command, text: str) -> dict:
+    """Turn 'M.move 3 1' into {'from_position': 3, 'to_position': 1}. The last text option takes the rest."""
+    kwargs, rest = {}, text.strip()
+    for i, p in enumerate(cmd.parameters):
+        if not rest:
+            if p.required:
+                raise ValueError(f"Missing `{p.display_name}`.")
+            break
+        if p.type is discord.AppCommandOptionType.string and i == len(cmd.parameters) - 1:
+            token, rest = rest, ""
+        else:
+            token, _, rest = rest.partition(" ")
+            rest = rest.strip()
+        kwargs[p.name] = _convert_prefix_arg(guild, cmd, p, token)
+    return kwargs
+
+
+@client.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild or not message.content[:len(PREFIX)].lower() == PREFIX.lower():
+        return
+    words = message.content[len(PREFIX):].split(maxsplit=1)
+    if not words:
+        return
+    cmd = tree.get_command(PREFIX_ALIASES.get(words[0].lower(), words[0].lower()))
+    rest = words[1] if len(words) > 1 else ""
+    if isinstance(cmd, app_commands.Group):
+        sub_words = rest.split(maxsplit=1)
+        sub = cmd.get_command(sub_words[0].lower()) if sub_words else None
+        if not sub:
+            return await message.reply(f"Use `{PREFIX}{cmd.name} {'|'.join(c.name for c in cmd.commands)}`.",
+                                       mention_author=False)
+        cmd, rest = sub, sub_words[1] if len(sub_words) > 1 else ""
+    if not isinstance(cmd, app_commands.Command):
+        return  # not one of our commands (e.g. someone typing "M.Sc"): stay quiet
+
+    required = cmd.default_permissions or (cmd.parent.default_permissions if cmd.parent else None)
+    if required and not message.author.guild_permissions >= required:
+        return await message.reply("Only server managers can use that.", mention_author=False)
+    try:
+        kwargs = parse_prefix_args(message.guild, cmd, rest)
+    except ValueError as e:
+        return await message.reply(f"{e}\nUsage: `{prefix_usage(cmd)}`", mention_author=False)
+
+    try:
+        await cmd.callback(PrefixInteraction(message, cmd), **kwargs)
+    except Exception:
+        log.exception("Prefix command %s failed", cmd.qualified_name)
+        try:
+            await message.reply("Something went wrong. Please try again.", mention_author=False)
+        except discord.HTTPException:
+            pass
 
 
 @tree.error
@@ -1385,4 +1561,9 @@ if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("Set DISCORD_TOKEN in a .env file next to bot.py")
     storage.init()
-    client.run(TOKEN, log_handler=log_handler, root_logger=True)
+    try:
+        client.run(TOKEN, log_handler=log_handler, root_logger=True)
+    except discord.PrivilegedIntentsRequired:
+        log.error("Discord refused to connect: turn on MESSAGE CONTENT INTENT in the Developer Portal "
+                  "(Applications > Musica > Bot > Privileged Gateway Intents), then restart the bot.")
+        raise
