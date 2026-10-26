@@ -1455,7 +1455,8 @@ class _BackgroundModal(discord.ui.Modal, title="Profile background"):
         super().__init__(timeout=300)
         self.editor = editor
         self.upload = discord.ui.FileUpload(required=True, max_values=1)
-        self.add_item(discord.ui.Label(text="Picture", description="PNG, JPG, WebP or GIF, up to 10 MB",
+        self.add_item(discord.ui.Label(text="Picture",
+                                       description="Musica accepts PNG, JPG, WebP or GIF pictures up to 10 MB",
                                        component=self.upload))
 
     async def on_submit(self, interaction: discord.Interaction):
