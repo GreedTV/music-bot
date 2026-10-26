@@ -1,6 +1,8 @@
 """Discord music bot: plays YouTube (and other sites) by link or search, with a queue and autoplay."""
 import asyncio
 import ctypes
+import hashlib
+import json
 import logging
 import logging.handlers
 import os
@@ -619,13 +621,31 @@ async def keep_awake_while_playing():
     ctypes.windll.kernel32.SetThreadExecutionState(flags)
 
 
+COMMANDS_HASH_FILE = BASE_DIR / ".commands_hash"
+
+
+async def sync_commands_if_changed():
+    """Only send the slash command list to Discord when it changed, since Discord rate-limits syncing."""
+    payload = sorted((c.to_dict(tree) for c in tree.get_commands()), key=lambda c: c["name"])
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    try:
+        if COMMANDS_HASH_FILE.read_text().strip() == digest:
+            log.info("Slash commands unchanged, skipping sync.")
+            return
+    except OSError:
+        pass
+    await tree.sync()
+    COMMANDS_HASH_FILE.write_text(digest)
+    log.info("Slash commands synced with Discord.")
+
+
 @client.event
 async def on_ready():
     if sys.platform == "win32" and not keep_awake_while_playing.is_running():
         keep_awake_while_playing.start()
     client.add_view(PlayerControls())  # makes buttons on existing cards work again after a restart
-    await tree.sync()
-    log.info("Logged in as %s — slash commands synced.", client.user)
+    log.info("Logged in as %s.", client.user)
+    await sync_commands_if_changed()
 
 
 if __name__ == "__main__":
