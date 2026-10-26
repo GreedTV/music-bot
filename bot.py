@@ -1263,7 +1263,15 @@ def set_247(player: GuildPlayer, on: bool, channel=None, text_channel=None):
 # ---- commands: profile and stats ----
 
 def format_listen_time(seconds: float) -> str:
-    hours, minutes = divmod(int(seconds // 60), 60)
+    """45m · 3h 20m · 4d 4h · 1w 1d"""
+    minutes = int(seconds // 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    weeks, days = divmod(days, 7)
+    if weeks:
+        return f"{weeks}w {days}d"
+    if days:
+        return f"{days}d {hours}h"
     return f"{hours}h {minutes}m" if hours else f"{minutes}m"
 
 
@@ -1352,7 +1360,7 @@ async def build_profile(member: discord.Member, guild: discord.Guild) -> tuple[d
     """The profile as a picture card inside an embed (or the text version if drawing fails)."""
     p = storage.get_profile(member.id, guild.id)
     style = storage.get_style(member.id)
-    servers = [f"{_server_name(gid)} · {format_listen_time(seconds)}" for gid, seconds in p.top_servers]
+    servers = [(_server_name(gid), format_listen_time(seconds)) for gid, seconds in p.top_servers]
     accent = style.color if style.color is not None else 0x5865F2
     footer = "Type /profile or M.profile to show yours · /editprofile to decorate it"
     try:

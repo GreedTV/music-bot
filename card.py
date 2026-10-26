@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-W, H = 1100, 680
+W, H = 1100, 880
 MARGIN = 48
 MAX_BACKGROUND_BYTES = 10 * 1024 * 1024
 MAX_BACKGROUND_PIXELS = 40_000_000
@@ -125,7 +125,7 @@ class CardData:
     top_songs: list[tuple[str, int]] = field(default_factory=list)
     top_artists: list[tuple[str, int]] = field(default_factory=list)
     listened_with: list[tuple[str, str]] = field(default_factory=list)
-    top_servers: list[str] = field(default_factory=list)
+    top_servers: list[tuple[str, str]] = field(default_factory=list)  # (name, time)
 
 
 def _rgb(color: int) -> tuple[int, int, int]:
@@ -174,6 +174,17 @@ def _avatar(data: CardData, size: int) -> Image.Image | None:
     ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
     av.putalpha(mask)
     return av
+
+
+def _list_number(img: Image.Image, x: float, baseline: float, number: int, accent):
+    """A small numbered square in front of a list row; #1 gets the profile color."""
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).rounded_rectangle((x, baseline - 23, x + 30, baseline + 5), 6,
+                                              fill=(*accent, 235) if number == 1 else (55, 57, 66, 220))
+    img.alpha_composite(overlay)
+    text = str(number)
+    draw_text(ImageDraw.Draw(img), x + 15 - text_width(text, "semibold", 17) / 2, baseline - 2, text, "semibold", 17,
+              (255, 255, 255))
 
 
 def render_profile(data: CardData) -> bytes:
@@ -229,28 +240,34 @@ def render_profile(data: CardData) -> bytes:
         draw_text(draw, x0 + 20, sy + 36, label, "regular", 20, grey, box_w - 40)
         draw_text(draw, x0 + 20, sy + 86, value, "bold", 40, white, box_w - 40)
 
-    # lists
-    ly = 412
-    _panel(img, (MARGIN, ly, W - MARGIN, ly + 212))
-    columns = [
-        (MARGIN + 24, 450, "Top songs", [f"{i}. {t}  ·  {n}×" for i, (t, n) in enumerate(data.top_songs, 1)]),
-        (MARGIN + 500, 230, "Top artists", [f"{i}. {a}" for i, (a, _) in enumerate(data.top_artists, 1)]),
-        (MARGIN + 754, 250, "Listened with", [f"{n}  ·  {t}" for n, t in data.listened_with]),
+    # lists, in two rows of boxes: (servers | listened with), then (songs | artists)
+    half = (W - 2 * MARGIN - gap) / 2
+    row1, row2 = 416, 608
+    boxes = [
+        (MARGIN, row1, half, 176, "Top servers", [(t, n) for n, t in data.top_servers], 3),
+        (MARGIN + half + gap, row1, half, 176, "Listened with", [(t, n) for n, t in data.listened_with], 3),
+        (MARGIN, row2, 640, 232, "Top songs", [(f"{n}×", t) for t, n in data.top_songs], 5),
+        (MARGIN + 640 + gap, row2, W - 2 * MARGIN - 640 - gap, 232, "Top artists",
+         [(f"{n}×", a) for a, n in data.top_artists], 5),
     ]
-    for x, width, title, items in columns:
-        draw_text(draw, x, ly + 38, title, "semibold", 22, soft)
+    for x, y, width, height, title, items, limit in boxes:
+        _panel(img, (x, y, x + width, y + height))
+        draw = ImageDraw.Draw(img)
+        draw_text(draw, x + 22, y + 38, title.upper(), "bold", 20, soft)
         if not items:
-            draw_text(draw, x, ly + 76, "Nothing yet", "regular", 21, grey)
-        for row, item in enumerate(items[:5]):
-            draw_text(draw, x, ly + 76 + row * 32, item, "regular", 21, white, width)
+            draw_text(draw, x + 22, y + 78, "Nothing yet", "regular", 21, grey)
+        step = 34 if limit == 3 else 32
+        for row, (strong, rest) in enumerate(items[:limit]):
+            base = y + 78 + row * step
+            _list_number(img, x + 22, base, row + 1, accent)
+            draw = ImageDraw.Draw(img)
+            end = draw_text(draw, x + 64, base, strong, "semibold", 21, white)
+            draw_text(draw, end, base, f"  ·  {rest}", "regular", 21, (225, 226, 232), x + width - 22 - end)
 
     # footer, on a soft dark fade so it's readable over any background
-    fade = Image.linear_gradient("L").resize((W, 70)).point(lambda v: int(v * 0.75))
-    img.paste((8, 8, 12, 255), (0, H - 70), fade)
+    fade = Image.linear_gradient("L").resize((W, 50)).point(lambda v: int(v * 0.6))
+    img.paste((8, 8, 12, 255), (0, H - 50), fade)
     draw = ImageDraw.Draw(img)
-    if data.top_servers:
-        draw_text(draw, MARGIN, H - 22, "Top servers: " + "  ·  ".join(data.top_servers), "regular", 19, grey,
-                  W - 2 * MARGIN - 140)
     brand = "Musica"
     draw_text(draw, W - MARGIN - text_width(brand, "bold", 20), H - 22, brand, "bold", 20, soft)
 
@@ -283,6 +300,6 @@ if __name__ == "__main__" and len(sys.argv) > 1:  # python card.py out.jpg  -> r
                       badges=["🎶 10h listener", "🔥 7-day streak", "💯 100 songs"],
                       top_songs=[("Daft Punk - Get Lucky", 9), ("The Weeknd - Blinding Lights", 7)],
                       top_artists=[("Daft Punk", 9), ("The Weeknd", 7)], listened_with=[("Alice", "3h 2m")],
-                      top_servers=["Chill Server · 12h"])
+                      top_servers=[("Chill Server", "12h 0m")])
     with open(sys.argv[1], "wb") as f:
         f.write(render_profile(sample))
