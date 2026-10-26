@@ -1,9 +1,11 @@
 """Discord music bot: plays YouTube (and other sites) by link or search, with a queue and autoplay."""
 import asyncio
+import ctypes
 import logging
 import logging.handlers
 import os
 import random
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -13,6 +15,7 @@ import discord
 import imageio_ffmpeg
 import yt_dlp
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -433,8 +436,21 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         await vc.disconnect()
 
 
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+
+
+@tasks.loop(seconds=30)
+async def keep_awake_while_playing():
+    """On Windows, stop the PC from going to sleep while music is playing (like a video player does)."""
+    playing = any(vc.is_playing() for vc in client.voice_clients)
+    flags = ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if playing else 0)
+    ctypes.windll.kernel32.SetThreadExecutionState(flags)
+
+
 @client.event
 async def on_ready():
+    if sys.platform == "win32" and not keep_awake_while_playing.is_running():
+        keep_awake_while_playing.start()
     await tree.sync()
     log.info("Logged in as %s — slash commands synced.", client.user)
 
