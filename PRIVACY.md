@@ -44,6 +44,12 @@ These are kept in memory while the bot runs, and are gone when it restarts or le
 - the recently played songs, so autoplay doesn't repeat them;
 - skip votes.
 
+## Backups
+Once a day, the saved data above (playlists, settings, stats, profile decorations and backgrounds) is copied into a
+backup, so it isn't lost if the computer fails. The last 7 daily backups are kept, on the bot's computer or in a
+cloud storage folder chosen by us. When you delete something, it can stay in these backups for up to 7 more days,
+until they're replaced.
+
 ## Technical logs
 The bot writes a log file on its computer to find and fix problems. It can contain error messages, server names,
 search text that failed to find a song, and links that failed to play. The log is limited to about 4 MB, and older

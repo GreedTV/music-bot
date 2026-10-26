@@ -1,7 +1,9 @@
 """SQLite storage for per-server settings and users' saved playlists (data/musicbot.db)."""
 import datetime
+import os
 import sqlite3
 import time
+import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -123,6 +125,29 @@ def _connect():
             yield conn
     finally:
         conn.close()
+
+
+def make_backup(folder: Path, keep: int = 7) -> Path:
+    """Zip a safe copy of the database (plus the profile backgrounds) as musicbot-YYYY-MM-DD.zip in `folder`,
+    and delete all but the newest `keep` backups. Safe to run while the bot is using the database."""
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"musicbot-{time.strftime('%Y-%m-%d')}.zip"
+    tmp_db, tmp_zip = folder / ".backup.db.tmp", folder / ".backup.zip.tmp"
+    src, dst = sqlite3.connect(DB_PATH), sqlite3.connect(tmp_db)
+    try:
+        src.backup(dst)  # SQLite's own online backup: a consistent copy even mid-write
+    finally:
+        src.close()
+        dst.close()
+    with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(tmp_db, "musicbot.db")
+        for picture in (DB_PATH.parent / "backgrounds").glob("*.jpg"):
+            z.write(picture, f"backgrounds/{picture.name}")
+    os.replace(tmp_zip, target)  # only a finished zip ever gets the real name
+    tmp_db.unlink()
+    for old in sorted(folder.glob("musicbot-*.zip"))[:-keep]:
+        old.unlink()
+    return target
 
 
 def init():

@@ -47,6 +47,7 @@ Only people in the bot's voice channel can use them. `/nowplaying` brings the ca
 | `/dj set\|clear` | Sets the DJ role (server managers) |
 | `/24-7 on\|off` | Stays in the voice channel even when it's empty, and rejoins after a restart (server managers) |
 | `/help` | Lists all commands |
+| `/invite` | A button to add Musica to another server (with the right permissions filled in) |
 | `/deletemydata` | Deletes everything the bot saved about you |
 
 ### Prefix commands
@@ -64,7 +65,7 @@ Every command also works with the `M.` prefix (any case), with the same options 
 | `M.dc` / `M.leave` | stop | | `M.pl` | playlist |
 | `M.247` | 24-7 | | `M.h` | help |
 | `M.pf` / `M.me` | profile | | `M.g` | grab |
-| `M.hist` | history | | | |
+| `M.hist` | history | | `M.inv` | invite |
 
 The bot's status shows **Type /help or M.help**.
 
@@ -91,6 +92,16 @@ Listening is counted every 15 seconds for everyone in the bot's voice channel wh
    .venv\Scripts\pip install -r requirements.txt
    .venv\Scripts\python bot.py
    ```
+
+## Backups
+Once a day the bot saves `musicbot-YYYY-MM-DD.zip` (the database plus profile backgrounds) and keeps the last 7.
+By default they go to `data/backups`. A backup on the same computer won't survive that computer dying, so it's
+best to point them at a cloud-synced folder by adding this line to `.env`:
+```
+BACKUP_DIR=C:\Users\<you>\OneDrive\Musica backups
+```
+**To restore:** stop the bot, unzip a backup into the `data` folder (replacing `musicbot.db` and `backgrounds`),
+then start the bot again.
 
 ## Run automatically at login (Windows)
 Starts the bot in the background each time you log in, and restarts it if it crashes.

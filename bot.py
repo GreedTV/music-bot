@@ -1672,8 +1672,28 @@ HELP_SECTIONS = {
     ],
     "🔒 Privacy": [
         ("/deletemydata", "Delete everything the bot saved about you"),
+        ("/invite", "Get a link to add Musica to your own server"),
     ],
 }
+
+
+INVITE_PERMISSIONS = discord.Permissions(view_channel=True, send_messages=True, embed_links=True,
+                                         attach_files=True, connect=True, speak=True)
+
+
+def invite_url() -> str:
+    return discord.utils.oauth_url(client.application_id, permissions=INVITE_PERMISSIONS,
+                                   scopes=("bot", "applications.commands"))
+
+
+@tree.command(description="Get a link to add Musica to your own server")
+async def invite(interaction: discord.Interaction):
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="Add Musica to a server", emoji="➕", url=invite_url()))
+    embed = discord.Embed(title="🎵 Add Musica to your server", color=0x5865F2,
+                          description="Click the button, pick a server, and press **Authorize**.\n"
+                                      "You need the **Manage Server** permission in that server.")
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @tree.command(name="help", description="Show all commands")
@@ -1689,8 +1709,8 @@ async def help_command(interaction: discord.Interaction):
                                       f"`{PREFIX}dc` stop · `{PREFIX}me` profile · `{PREFIX}g` grab · `{PREFIX}h` help")
     for section, commands in HELP_SECTIONS.items():
         embed.add_field(name=section, value="\n".join(f"`{c}` {d}" for c, d in commands), inline=False)
-    embed.add_field(name="Links", value=f"[Terms of Service]({TERMS_URL}) · [Privacy Policy]({PRIVACY_URL}) · "
-                                        f"[Source code]({REPO_URL})", inline=False)
+    embed.add_field(name="Links", value=f"[Add Musica to your server]({invite_url()}) · [Terms of Service]({TERMS_URL}) · "
+                                        f"[Privacy Policy]({PRIVACY_URL}) · [Source code]({REPO_URL})", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -1733,7 +1753,7 @@ PREFIX_ALIASES = {
     "p": "play", "s": "skip", "next": "skip", "back": "previous", "prev": "previous", "np": "nowplaying",
     "q": "queue", "vol": "volume", "v": "volume", "l": "loop", "ap": "autoplay", "ly": "lyrics", "f": "filter",
     "leave": "stop", "dc": "stop", "rm": "remove", "sh": "shuffle", "pl": "playlist", "h": "help", "247": "24-7",
-    "pf": "profile", "me": "profile", "g": "grab", "hist": "history",
+    "pf": "profile", "me": "profile", "g": "grab", "hist": "history", "inv": "invite",
 }
 
 
@@ -2003,6 +2023,23 @@ async def keep_awake_while_playing():
     ctypes.windll.kernel32.SetThreadExecutionState(flags)
 
 
+# Daily backups of data/ (playlists, stats, profiles). Set BACKUP_DIR in .env to e.g. a OneDrive folder
+# so the backups also live off this computer.
+BACKUP_DIR = Path(os.getenv("BACKUP_DIR") or BASE_DIR / "data" / "backups")
+
+
+@tasks.loop(hours=1)
+async def daily_backup():
+    """Once a day (checked every hour, and at startup), save a backup and keep the last 7."""
+    if (BACKUP_DIR / f"musicbot-{time.strftime('%Y-%m-%d')}.zip").exists():
+        return
+    try:
+        path = await asyncio.to_thread(storage.make_backup, BACKUP_DIR)
+        log.info("Backup saved: %s", path)
+    except Exception:
+        log.exception("Backup failed")
+
+
 COMMANDS_HASH_FILE = BASE_DIR / ".commands_hash"
 
 
@@ -2049,6 +2086,8 @@ async def on_ready():
         update_progress.start()
     if not track_listening.is_running():
         track_listening.start()
+    if not daily_backup.is_running():
+        daily_backup.start()
     storage.prune_old_plays()
     client.add_view(PlayerControls())  # makes buttons on existing cards work again after a restart
     log.info("Logged in as %s.", client.user)
