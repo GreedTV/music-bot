@@ -1532,7 +1532,7 @@ class ProfileEditor(discord.ui.View):
             self, "Your bio", "Bio (leave empty to remove it)", storage.get_style(self.owner_id).bio, 100,
             "lofi all day 🌙", save))
 
-    @discord.ui.button(label="Favorite song", emoji="⭐", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Favorite", emoji="⭐", style=discord.ButtonStyle.primary, row=0)
     async def favorite(self, interaction: discord.Interaction, button: discord.ui.Button):
         def save(text: str):
             if text and not _no_links(text):
@@ -1548,12 +1548,12 @@ class ProfileEditor(discord.ui.View):
     async def background(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(_BackgroundModal(self))
 
-    @discord.ui.button(label="Remove background", emoji="🗑️", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Remove BG", emoji="🗑️", style=discord.ButtonStyle.secondary, row=1)
     async def remove_background(self, interaction: discord.Interaction, button: discord.ui.Button):
         storage.delete_background(self.owner_id)
         await self.refresh(interaction)
 
-    @discord.ui.button(label="Reset everything", emoji="🧽", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Reset", emoji="🧽", style=discord.ButtonStyle.danger, row=1)
     async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
         storage.reset_style(self.owner_id)
         await self.refresh(interaction)

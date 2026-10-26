@@ -39,7 +39,7 @@ Only people in the bot's voice channel can use them. `/nowplaying` brings the ca
 | `/autoplay on\|off` | Keep playing similar songs when the queue ends (remembered per server) |
 | `/playlist save\|add\|play\|show\|list\|delete` | Your own saved playlists, usable in any server |
 | `/profile` | Posts your profile card in the channel: listening time, songs heard/requested, top songs and artists, streak, badges, who you listen with, top servers. Only you can show yours: `M.profile @someone` gets a playful "that's private" reply. A server the bot has left shows as "Unknown server", and someone it can't look up as "Unknown user" |
-| `/editprofile` | Opens the profile editor: a live preview of your card, with buttons for 🎨 Color (type a color code like `#ff66aa`), 💬 Bio (100 characters, no links), ⭐ Favorite song (shown as typed), 🖼️ Background (upload a picture in the form), 🗑️ Remove background, 🧽 Reset everything and ✅ Done. Only you can use your editor. Badges are earned automatically |
+| `/editprofile` | Opens the profile editor: a live preview of your card, with buttons for 🎨 Color (type a color code like `#ff66aa`), 💬 Bio (100 characters, no links), ⭐ Favorite (your favorite song, shown as typed), 🖼️ Background (upload a picture in the form), 🗑️ Remove BG, 🧽 Reset and ✅ Done. Only you can use your editor. Badges are earned automatically |
 | `/tracking on\|off` | Turn your listening stats on or off (off deletes them) |
 | `/top` | This server's most played songs and biggest listeners in the last 7 days |
 | `/history` | The last 20 songs played in this server |
