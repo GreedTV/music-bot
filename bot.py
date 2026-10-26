@@ -1775,7 +1775,7 @@ class PrefixInteraction:
 
     async def _send(self, content=None, *, embed=None, view=None, file=None, ephemeral=False, allowed_mentions=None,
                     **_):
-        kwargs = {"content": content, "embed": embed, "mention_author": False,
+        kwargs = {"content": content, "embed": embed,
                   "allowed_mentions": allowed_mentions or discord.AllowedMentions.none()}
         if file is not None:
             kwargs["file"] = file
@@ -1783,7 +1783,7 @@ class PrefixInteraction:
             kwargs["view"] = view
         elif ephemeral and embed is None:
             kwargs["delete_after"] = 30  # stand-in for "only you can see this": tidy it up later
-        self._last = await self.message.reply(**kwargs)
+        self._last = await self.channel.send(**kwargs)  # a normal message, not a reply
         return self._last
 
     async def original_response(self) -> discord.Message | None:
@@ -1905,26 +1905,26 @@ async def on_message(message: discord.Message):
         sub_words = rest.split(maxsplit=1)
         sub = cmd.get_command(sub_words[0].lower()) if sub_words else None
         if not sub:
-            return await message.reply(f"Use `{PREFIX}{cmd.name} {'|'.join(c.name for c in cmd.commands)}`.",
-                                       mention_author=False)
+            return await message.channel.send(f"Use `{PREFIX}{cmd.name} {'|'.join(c.name for c in cmd.commands)}`.",
+                                              delete_after=30)
         cmd, rest = sub, sub_words[1] if len(sub_words) > 1 else ""
     if not isinstance(cmd, app_commands.Command):
         return  # not one of our commands (e.g. someone typing "M.Sc"): stay quiet
 
     required = cmd.default_permissions or (cmd.parent.default_permissions if cmd.parent else None)
     if required and not message.author.guild_permissions >= required:
-        return await message.reply("Only server managers can use that.", mention_author=False)
+        return await message.channel.send("Only server managers can use that.", delete_after=30)
     try:
         kwargs = parse_prefix_args(message.guild, cmd, rest, message.attachments, message.mentions)
     except ValueError as e:
-        return await message.reply(f"{e}\nUsage: `{prefix_usage(cmd)}`", mention_author=False)
+        return await message.channel.send(f"{e}\nUsage: `{prefix_usage(cmd)}`", delete_after=30)
 
     try:
         await cmd.callback(PrefixInteraction(message, cmd), **kwargs)
     except Exception:
         log.exception("Prefix command %s failed", cmd.qualified_name)
         try:
-            await message.reply("Something went wrong. Please try again.", mention_author=False)
+            await message.channel.send("Something went wrong. Please try again.", delete_after=30)
         except discord.HTTPException:
             pass
 
