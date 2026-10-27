@@ -1563,8 +1563,34 @@ class ProfileEditor(discord.ui.View):
         await interaction.response.edit_message(content="✅ Profile saved! Show it off with `M.profile`.", view=None)
 
 
-@tree.command(name="editprofile", description="Open the profile editor: color, bio, favorite song, background")
-async def edit_profile(interaction: discord.Interaction):
+class OpenEditorButton(discord.ui.View):
+    """M.editprofile can't post a private message, so it posts this button; clicking it opens the editor
+    privately (only the clicker sees it)."""
+
+    def __init__(self, owner: discord.Member):
+        super().__init__(timeout=120)
+        self.owner = owner
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner.id:
+            await interaction.response.send_message(
+                f"🙅 That editor is **{self.owner.display_name}**'s! Type `M.editprofile` to get your own.",
+                ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Open my editor", emoji="✏️", style=discord.ButtonStyle.primary)
+    async def open(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await open_editor(interaction)
+        try:
+            await interaction.message.delete()  # the editor is open now, so tidy up the button message
+        except discord.HTTPException:
+            pass
+
+
+async def open_editor(interaction: discord.Interaction):
+    """Show the profile editor privately to the person who asked."""
     await interaction.response.defer(ephemeral=True, thinking=True)
     editor = ProfileEditor(interaction.user, interaction.guild)
     panel = await editor.render()
@@ -1574,6 +1600,16 @@ async def edit_profile(interaction: discord.Interaction):
     if files:
         panel["file"] = files[0]
     editor.message = await interaction.followup.send(ephemeral=True, wait=True, **panel)
+
+
+@tree.command(name="editprofile", description="Open the profile editor: color, bio, favorite song, background")
+async def edit_profile(interaction: discord.Interaction):
+    if isinstance(interaction, PrefixInteraction):
+        return await interaction.channel.send(
+            f"✏️ **{interaction.user.display_name}**, your profile editor is ready. Only you can open it.",
+            view=OpenEditorButton(interaction.user), delete_after=120,
+            allowed_mentions=discord.AllowedMentions.none())
+    await open_editor(interaction)
 
 
 @tree.command(description="Turn listening stats on or off for you (off also deletes your stats)")
